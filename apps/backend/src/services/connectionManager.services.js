@@ -70,3 +70,15 @@ export const broadcast=async(roomID,excludePeerID,message)=>{
         }
     });
 }
+
+export const relaySignal=(roomID, fromPeerID, targetPeerID, message) =>{
+  const room = getRoom(roomID)
+
+  const targetWs = room.peers.get(targetPeerID)
+  if (!targetWs) return
+
+  targetWs.send(JSON.stringify({
+    ...message,
+    from: fromPeerID
+  }))
+}

@@ -1,18 +1,13 @@
 import app from"./app.js"
-import dotenv from "dotenv"
+import { config } from "../src/config/config.env.js";
 import http from "http"
 import {Server} from "socket.io"
 
-dotenv.config()
-
-PORT=process.env.PORT
 
 const server=http.createServer(app)
 
 const io=new Server(server,{
-  cors:{
-    origin:"*",methods:["GET","POST"]
-  }
+  cors:config.cors
 })
 
 io.on("connection",(socket)=>{
@@ -23,6 +18,6 @@ io.on("connection",(socket)=>{
     });
 })
 
-app.listen(PORT, () => {
+app.listen(config.PORT, () => {
       console.log(`Server running on port ${PORT}`)
     });
