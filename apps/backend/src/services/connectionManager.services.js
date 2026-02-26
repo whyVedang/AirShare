@@ -1,84 +1,81 @@
-const rooms=new Map()
-const max_PEER=6 
+const rooms = new Map();
+const MAX_ROOM_CAPACITY = 50;
+const SFU_THRESHOLD = 6; 
 
-export const joinRoom=async(roomID,peerID,ws)=>{
-    const room=createRoom(roomID)
+//  Helper Functions 
+const sendData = (ws, message) => {
+    if (ws && ws.readyState === 1) { // 1 === WebSocket.OPEN
+        ws.send(JSON.stringify(message));
+    }
+};
 
-    if(room.peers.size()>max_PEER){
-        ws.send(JSON.stringify({type:"room full"}))
-        return 
+export const getRoom = (roomID) => rooms.get(roomID);
+
+export const getAllRooms = () => Array.from(rooms.values());
+
+// CRUD
+export const createRoom = (roomID) => {
+    if (!rooms.has(roomID)) {
+        rooms.set(roomID, { id: roomID, peers: new Map() });
+    }
+    return rooms.get(roomID);
+};
+
+export const validateRoom = (roomID) => {
+    const room = getRoom(roomID);
+    if (!room) return { valid: false, error: "Room not found" };
+    if (room.peers.size >= MAX_ROOM_CAPACITY) return { valid: false, error: "Room full" };
+    
+    return { valid: true, room };
+};
+
+export const joinRoom = (roomID, peerID, ws) => {
+    const room = createRoom(roomID);
+
+    if (room.peers.size >= MAX_ROOM_CAPACITY) {
+        sendData(ws, { type: "error", message: "Room full" });
+        return;
     }
 
-    const existingPeer=[...room.peers.keys()]
+    const existingPeers = Array.from(room.peers.keys());
+    
+    room.peers.set(peerID, ws);
+    ws.roomID = roomID;
+    ws.peerID = peerID;
 
-    room.peers.set(peerID,ws)
+    sendData(ws, { type: 'existing-peers', payload: existingPeers });
 
-    ws.roomID = roomID
-    ws.peerID = peerID
+    broadcast(roomID, peerID, { type: 'new-peer', payload: peerID });
+};
 
-    ws.send(JSON.stringify({
-        type: 'existing-peers',
-        payload: existingPeers
-    }))
+export const leaveRoom = (roomID, peerID) => {
+    const room = getRoom(roomID);
+    if (!room) return;
 
-    // Notify others
-    broadcast(roomID, peerID, {
-        type: 'new-peer',
-        payload: peerID
-    })
-}
-
-export const createRoom=async(roomID)=>{
-    if(!rooms.has(roomID)){
-        rooms.set(roomID,{
-            id:roomID,
-            peers:new Map()
-        })
-    }
-    return rooms.get(roomID)
-}
-
-
-export const leaveRoom=async(roomID)=>{
-    const room=getRoom(roomID)
-    if(!room) return
-
-    room.peers.delete(peerID)
-
-    broadcast(roomID, peerID, {
-        type: 'peer-disconnected',
-        payload: peerID
-    })
+    room.peers.delete(peerID);
+    broadcast(roomID, peerID, { type: 'peer-disconnected', payload: peerID });
 
     if (room.peers.size === 0) {
-        rooms.delete(roomID)
+        rooms.delete(roomID);
     }
-}
+};
 
-export const getRoom=async(roomID)=>{
-    const room =rooms.get(roomID)
-    if (room) return room 
-    else return 
-}
+// Routing 
+export const broadcast = (roomID, excludePeerID, message) => {
+    const room = getRoom(roomID);
+    if (!room) return;
 
-export const broadcast=async(roomID,excludePeerID,message)=>{
-    const room=getRoom(roomID)
-
-    room.peers.forEach((ws,peerID) => {
-        if(peerID !== excludePeerID && ws.readyState === 1) {
-            ws.send(JSON.stringify(message))
+    room.peers.forEach((ws, peerID) => {
+        if (peerID !== excludePeerID) {
+            sendData(ws, message);
         }
     });
-}
+};
 
-export const relaySignal=(roomID, fromPeerID, targetPeerID, message) =>{
-  const room = getRoom(roomID)
+export const relaySignal = (roomID, fromPeerID, targetPeerID, message) => {
+    const room = getRoom(roomID);
+    if (!room) return;
 
-  const targetWs = room.peers.get(targetPeerID)
-  if (!targetWs) return
-
-  targetWs.send(JSON.stringify({
-    ...message,
-    from: fromPeerID
-  }))
-}
+    const targetWs = room.peers.get(targetPeerID);
+    sendData(targetWs, { ...message, from: fromPeerID });
+};
