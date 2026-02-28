@@ -1,13 +1,19 @@
 class ChunkController {
-  constructor(channel, congestionController) {
+  constructor(channel, congestionController,getAvgRTT) {
     this.channel = channel;
     this.controller = congestionController;
     this.maxBuffer = 256 * 1024;
+    this.rtt=getAvgRTT;
+    this.channel.bufferedAmountLowThreshold = this.maxBuffer / 2;
   }
 
   async sendFile(file) {
     let offset=0;
     while(offset<file.size){
+
+      const avgRTT = this.rtt();
+      this.controller.update(avgRTT, this.channel.bufferedAmount);
+
       const chunkSize=this.controller.getChunkSize()
       if(this.channel.bufferedAmount>=this.maxBuffer) await this.waitForBufferLow()
 
@@ -23,8 +29,6 @@ class ChunkController {
 
   async waitForBufferLow() {
     return new Promise(resolve => {
-    this.channel.bufferedAmountLowThreshold = this.maxBuffer / 2;
-
     const handler = () => {
       this.channel.removeEventListener("bufferedamountlow", handler);
       resolve();
