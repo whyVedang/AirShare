@@ -36,7 +36,7 @@ class ChunkController {
   }
 }
 
-
+export default ChunkController;
 // offset = 0
 // while offset < file.size
 // Ask controller.getChunkSize()

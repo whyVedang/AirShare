@@ -2,17 +2,25 @@ class LatencyController {
   constructor() {
     this.avgRTT = 0;
     this.alpha = 0.2;
-    this.lastPingTime = null;
+    this.pingCount=0;
+    this.pendingPings=new Map();
   }
 
   recordPing() {
-    this.lastPingTime = Date.now();
+    const id=++this.pingCount;
+    const lastPingTime = Date.now();
+    this.pendingPings.set(id,lastPingTime)
+
+    return { type: "ping", id };
   }
 
-  recordPong() {
-    if (!this.lastPingTime) return;
+  recordPong(id) {
+    const PingTime=this.pendingPings.get(id)
 
-    const rtt = Date.now() - this.lastPingTime;
+    if (!PingTime) return;
+
+    const rtt = Date.now() - PingTime;
+    this.pendingPings.delete(id)
 
     if (this.avgRTT === 0) {
       this.avgRTT = rtt;
@@ -21,7 +29,6 @@ class LatencyController {
         (1 - this.alpha) * this.avgRTT + this.alpha * rtt;
     }
 
-    this.lastPingTime = null;
     return rtt;
   }
 
