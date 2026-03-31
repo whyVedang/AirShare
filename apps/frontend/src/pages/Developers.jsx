@@ -55,7 +55,7 @@ const Developers = ({ onBack }) => {
               boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
             }}>
               <pre className="text-[#FF5C00]/80 text-sm overflow-x-auto">
-{`┌─────────────────────────────────────────────┐
+                {`┌─────────────────────────────────────────────┐
 │  Browser A          Signaling Server         │
 │     ↓                      ↓                  │
 │  [Offer/Answer Exchange via Socket.io]       │
@@ -171,7 +171,7 @@ const Developers = ({ onBack }) => {
             style={{
               boxShadow: '0 4px 20px rgba(255, 92, 0, 0.3)'
             }}
-            whileHover={{ 
+            whileHover={{
               scale: 1.05,
               boxShadow: '0 6px 30px rgba(255, 92, 0, 0.5)'
             }}
@@ -183,7 +183,7 @@ const Developers = ({ onBack }) => {
       </div>
     </motion.div>
   );
-};
+}
 
 export default Developers;
 
