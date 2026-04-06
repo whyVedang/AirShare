@@ -4,11 +4,12 @@ import { motion } from 'framer-motion';
 const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
   const [roomId, setRoomId] = useState('');
   const [createdRoomId, setCreatedRoomId] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const handleCreateRoom = () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     setCreatedRoomId(newRoomId);
-    
+
     if (onJoinRoom) {
       setTimeout(() => {
         onJoinRoom(newRoomId);
@@ -27,6 +28,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
   const copyToClipboard = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       console.error('Failed to copy:', err);
     }
@@ -46,8 +49,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
 
   const itemVariants = {
     hidden: { opacity: 0, y: 20 },
-    visible: { 
-      opacity: 1, 
+    visible: {
+      opacity: 1,
       y: 0,
       transition: {
         type: 'spring',
@@ -70,13 +73,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
           {/* P2P Visualization */}
           <div className="relative inline-block">
             {/* Left Device Node */}
-            <motion.div 
+            <motion.div
               className="absolute left-[-120px] top-1/2 transform -translate-y-1/2"
-              animate={{ 
+              animate={{
                 scale: [1, 1.1, 1],
               }}
-              transition={{ 
-                duration: 2, 
+              transition={{
+                duration: 2,
                 repeat: Infinity,
                 ease: "easeInOut"
               }}
@@ -85,11 +88,11 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                 {/* Device Circle */}
                 <circle cx="40" cy="40" r="30" fill="url(#gradient1)" opacity="0.2" />
                 <circle cx="40" cy="40" r="25" fill="none" stroke="url(#gradient1)" strokeWidth="2" />
-                
+
                 {/* Laptop Icon */}
                 <rect x="25" y="30" width="30" height="20" rx="2" fill="white" opacity="0.9" />
                 <rect x="20" y="50" width="40" height="3" rx="1" fill="white" opacity="0.7" />
-                
+
                 {/* Signal Waves */}
                 <motion.path
                   d="M 55 35 Q 60 40 55 45"
@@ -109,7 +112,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                   animate={{ opacity: [0.2, 0.6, 0.2] }}
                   transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut", delay: 0.3 }}
                 />
-                
+
                 <defs>
                   <linearGradient id="gradient1" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="#FF5C00" />
@@ -120,13 +123,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             </motion.div>
 
             {/* Right Device Node */}
-            <motion.div 
+            <motion.div
               className="absolute right-[-120px] top-1/2 transform -translate-y-1/2"
-              animate={{ 
+              animate={{
                 scale: [1, 1.1, 1],
               }}
-              transition={{ 
-                duration: 2, 
+              transition={{
+                duration: 2,
                 repeat: Infinity,
                 ease: "easeInOut",
                 delay: 1
@@ -136,11 +139,11 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                 {/* Device Circle */}
                 <circle cx="40" cy="40" r="30" fill="url(#gradient2)" opacity="0.2" />
                 <circle cx="40" cy="40" r="25" fill="none" stroke="url(#gradient2)" strokeWidth="2" />
-                
+
                 {/* Phone Icon */}
                 <rect x="30" y="25" width="20" height="30" rx="3" fill="white" opacity="0.9" />
                 <circle cx="40" cy="50" r="2" fill="#FF5C00" opacity="0.7" />
-                
+
                 {/* Signal Waves */}
                 <motion.path
                   d="M 25 35 Q 20 40 25 45"
@@ -160,7 +163,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                   animate={{ opacity: [0.2, 0.6, 0.2] }}
                   transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut", delay: 1.3 }}
                 />
-                
+
                 <defs>
                   <linearGradient id="gradient2" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="#FF8C42" />
@@ -208,8 +211,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
               }}
             >
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" fill="#FF5C00" opacity="0.8"/>
-                <polyline points="13 2 13 9 20 9" fill="#FF8C42" opacity="0.6"/>
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" fill="#FF5C00" opacity="0.8" />
+                <polyline points="13 2 13 9 20 9" fill="#FF8C42" opacity="0.6" />
               </svg>
             </motion.div>
 
@@ -228,8 +231,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
               }}
             >
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" fill="#FF8C42" opacity="0.8"/>
-                <polyline points="13 2 13 9 20 9" fill="#FF5C00" opacity="0.6"/>
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" fill="#FF8C42" opacity="0.8" />
+                <polyline points="13 2 13 9 20 9" fill="#FF5C00" opacity="0.6" />
               </svg>
             </motion.div>
 
@@ -239,7 +242,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             </h1>
             <div className="h-1 bg-gradient-to-r from-[#FF5C00] via-[#FF8C42] to-transparent mt-4" />
           </div>
-          
+
           <p className="text-gray-500 text-lg font-medium mt-12 tracking-wide">
             Direct. Encrypted. Unstoppable.
           </p>
@@ -261,7 +264,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
           >
             {/* Subtle gradient overlay */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-[#FF5C00]/10 to-transparent" />
-            
+
             <div className="flex items-center gap-3 mb-8">
               <div className="w-1 h-8 bg-gradient-to-b from-[#FF5C00] to-[#FF8C42]" />
               <h2 className="text-3xl font-bold text-white tracking-tight">
@@ -278,7 +281,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
               style={{
                 boxShadow: '0 4px 20px rgba(255, 92, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
               }}
-              whileHover={{ 
+              whileHover={{
                 scale: 1.02,
                 boxShadow: '0 6px 30px rgba(255, 92, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
               }}
@@ -304,13 +307,32 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                   <code className="flex-1 text-3xl font-mono font-bold text-white tracking-wider">
                     {createdRoomId}
                   </code>
-                  <motion.button
-                    onClick={() => copyToClipboard(createdRoomId)}
-                    className="px-5 py-2.5 bg-white/10 hover:bg-white/20 border border-white/10 text-white rounded-md font-semibold text-sm transition-colors"
-                    whileTap={{ scale: 0.95 }}
-                  >
-                    Copy
-                  </motion.button>
+                  <motion.div className="relative">
+                    <motion.button
+                      onClick={() => copyToClipboard(createdRoomId)}
+                      className="px-4 py-2.5 bg-white/10 hover:bg-white/20 border border-white/10 text-white rounded-md font-semibold text-sm transition-colors flex items-center gap-2"
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      Copy
+                    </motion.button>
+                    {copied && (
+                      <motion.div
+                        initial={{ opacity: 0, y: -8 }}
+                        animate={{ opacity: 1, y: -40 }}
+                        exit={{ opacity: 0, y: -8 }}
+                        transition={{ duration: 0.2 }}
+                        className="absolute right-0 bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-md whitespace-nowrap"
+                        style={{
+                          boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)'
+                        }}
+                      >
+                        ✓ Copied!
+                      </motion.div>
+                    )}
+                  </motion.div>
                 </div>
               </motion.div>
             )}
@@ -327,7 +349,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
           >
             {/* Subtle gradient overlay */}
             <div className="absolute top-0 left-0 w-32 h-32 bg-gradient-to-br from-[#FF5C00]/10 to-transparent" />
-            
+
             <div className="flex items-center gap-3 mb-8">
               <div className="w-1 h-8 bg-gradient-to-b from-[#FF8C42] to-[#FF5C00]" />
               <h2 className="text-3xl font-bold text-white tracking-tight">
@@ -364,7 +386,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
                 style={!roomId.trim() ? {} : {
                   boxShadow: '0 2px 12px rgba(255, 92, 0, 0.1)'
                 }}
-                whileHover={roomId.trim() ? { 
+                whileHover={roomId.trim() ? {
                   scale: 1.02,
                   boxShadow: '0 4px 20px rgba(255, 92, 0, 0.2)'
                 } : {}}
@@ -399,6 +421,6 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
       </motion.div>
     </div>
   );
-};
+}
 
 export default Home;
