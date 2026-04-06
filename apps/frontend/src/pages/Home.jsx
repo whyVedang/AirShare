@@ -10,9 +10,20 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
   const handleCreateRoom = async () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     try {
-      await navigator.clipboard.writeText(newRoomId);
-    } catch (err) {
-      console.error('Failed to copy code to clipboard:', err);
+      // Ask the backend for a secure Room ID
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+
+      if (!response.ok) throw new Error("Failed to create room");
+
+      const data = await response.json();
+
+      navigate(`/room/${data.roomID}`);
+    } catch (error) {
+      console.error("Error creating room:", error);
+      alert("Could not create room. Please try again.");
     }
 
     setIsGenerating(true);

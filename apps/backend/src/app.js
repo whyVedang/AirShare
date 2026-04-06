@@ -8,10 +8,20 @@ import basicRouter from "./routes/basic.router.js"
 
 const app = express()
 
-app.use(cors())
+app.set('trust proxy', 1);
 
+const corsOptions = {
+    origin: process.env.NODE_ENV === "production" 
+        ? [process.env.FRONTEND_URL]
+        : "*",
+    methods: ["GET", "POST"],
+    credentials: true
+};
+
+app.use(cors(corsOptions));
 
 app.use(express.json())
+
 app.use(limiter)
 app.use(requestLogger)
 
