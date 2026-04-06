@@ -1,4 +1,4 @@
-import logger from "../config/logger.js"
+import logger from "../config/config.logger.js"
 import { AppError } from "../utils/AppError.js"
 import { ZodError } from "zod"
 

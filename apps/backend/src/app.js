@@ -1,8 +1,8 @@
 import express from "express"
 import cors from "cors"
-import { ErrHandle } from "./middleware/error.middleware"
-import { limiter } from "./middleware/ratelimiter.middleware"
-import { requestLogger } from "./middleware/requestLogger.middleware"
+import { ErrHandle } from "./middleware/error.middleware.js"
+import { limiter } from "./middleware/ratelimiter.middleware.js"
+import { requestLogger } from "./middleware/requestLogger.middleware.js"
 import basicRouter from "./routes/basic.router.js"
 
 
@@ -17,7 +17,6 @@ app.use(requestLogger)
 
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
-
 
 app.use("api/v1/",basicRouter)
 app.use(ErrHandle)

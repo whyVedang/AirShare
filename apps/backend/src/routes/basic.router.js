@@ -1,5 +1,5 @@
 import express from "express"
-import { createRoom, deleteRoom, getAllRoom, getStats, joinRoom, roomStatus } from "../controller/room.controller"
+import { createRoom, getAllRoom, getStats, joinRoom, roomStatus } from "../controller/room.controller.js"
 
 const router=express.Router()
 

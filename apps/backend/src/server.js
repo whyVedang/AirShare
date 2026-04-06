@@ -3,6 +3,7 @@ import { config } from "../src/config/config.env.js";
 import http from "http"
 import {Server} from "socket.io"
 
+import 'dotenv/config';
 
 const server=http.createServer(app)
 
@@ -18,6 +19,8 @@ io.on("connection",(socket)=>{
     });
 })
 
-app.listen(config.PORT, () => {
+const PORT=process.env.PORT
+
+app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`)
     });
