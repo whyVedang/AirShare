@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import SignalingClient from "../infrastructure/signalingClient"
+import PeerEngine from "../domain/peer/PeerEngine"
+
 
 const Room = ({ roomId, onLeave }) => {
+  const clientRef = useRef(null);
+  const peerRef = useRef(null);
+  const didInit = useRef(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
-  const [transferProgress, setTransferProgress] = useState(0);
   const [latency, setLatency] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState([]);
-  const [logs, setLogs] = useState([
-    'Initializing WebRTC DataChannel...',
-    'SCTP over UDP transport established',
-    'Signaling server: Connected',
-    'Awaiting peer connection...'
-  ]);
+  const [logs, setLogs] = useState([]);
+
   const logContainerRef = useRef(null);
 
   const containerVariants = {
@@ -38,20 +39,125 @@ const Room = ({ roomId, onLeave }) => {
     }
   };
 
-  // Auto-scroll logs to bottom
+  const getTimestamp = () => {
+    return new Date().toLocaleTimeString('en-US', { hour12: false });
+  };
+
+  const addLog = (msg) => {
+    setLogs(prev => [...prev, `[${getTimestamp()}] ${msg}`]);
+  };
+
   useEffect(() => {
     if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
   }, [logs]);
 
-  const getTimestamp = () => {
-    const now = new Date();
-    return now.toLocaleTimeString('en-US', { hour12: false });
+  useEffect(() => {
+    if (didInit.current) return;
+    didInit.current = true;
+    const client = new SignalingClient('ws://localhost:3000');
+    clientRef.current = client;
+
+    addLog('🔌 Connecting to signaling server...');
+
+    registerHandlers(client);
+
+    client.connect()
+      .then(() => {
+        setConnectionStatus('connecting');
+        addLog('Connected to signaling server');
+        client.joinRoom(roomId);
+        addLog(`🏠 Joined room: ${roomId}`);
+      })
+      .catch((err) => {
+        setConnectionStatus('failed');
+        addLog('Connection failed');
+        console.error(err);
+      });
+
+    return () => {
+      client.disconnect();
+      addLog('🔌 Disconnected');
+      didInit.current = false
+    };
+  }, [roomId]);
+
+  const registerHandlers = (client) => {
+
+    client.on('onRoomJoined', (peers) => {
+      addLog(`👥 Existing peers: ${peers.length}`);
+
+      if (peers.length === 0) {
+        addLog('🕐 Waiting for peer...');
+      }
+      else {
+        addLog('👀 Peer exists, waiting for offer...');
+      }
+    });
+
+    client.on('onPeerJoined', async (peerID) => {
+      addLog(`🔥 Peer joined: ${peerID}`);
+
+      const peer = new PeerEngine();
+      peerRef.current = peer;
+
+      setupPeer(peer, peerID);
+
+      const offer = peer.createOffer()
+      client.sendOffer(peerID, offer);
+      addLog('📤 Sent offer');
+    });
+
+    client.on('onOffer', async ({ sdp, targetPeerID }) => {
+      addLog('📩 Received offer');
+
+      const peer = new PeerEngine();
+      peerRef.current = peer;
+
+      setupPeer(peer, payload.from || payload.targetPeerID);
+
+      await peer.setRemoteDescription(sdp);
+
+      const answer = await peer.createAnswer();
+      client.sendAnswer(targetPeerID, answer);
+
+      addLog('📤 Sent answer');
+    });
+
+    client.on('onAnswer', async ({ sdp }) => {
+      addLog('📩 Received answer');
+      if (!peerRef.current) return;
+      await peerRef.current.setRemoteDescription(sdp);
+    });
+
+    client.on('onIceCandidate', async ({ candidate }) => {
+      addLog('📡 Received ICE candidate');
+      if (!peerRef.current) return;
+      try {
+        await peerRef.current.addIceCandidate(payload.candidate);
+      } catch (err) {
+        console.warn("ICE Candidate arrived too early, or failed:", err);
+      }
+    });
   };
 
-  const addLog = (message) => {
-    setLogs(prev => [...prev, `[${getTimestamp()}] ${message}`]);
+  const setupPeer = (peer, targetPeerID) => {
+    const client = clientRef.current;
+
+    peer.onIceCandidate((candidate) => {
+      client.sendIceCandidate(targetPeerID, candidate);
+      addLog('📡 Sent ICE candidate');
+    });
+
+    peer.onConnectionStateChange((state) => {
+      addLog(`🔗 State: ${state}`);
+
+      if (state === 'connected') {
+        setConnectionStatus('connected');
+        addLog('🎉 P2P connection established!');
+      }
+    });
   };
 
   const handleDragOver = (e) => {
@@ -91,7 +197,6 @@ const Room = ({ roomId, onLeave }) => {
     e.stopPropagation();
     setIsDragOver(false);
 
-    const fileList = e.dataTransfer.files;
     const newFiles = Array.from(fileList).map((file, idx) => ({
       id: Date.now() + idx,
       name: file.name,
@@ -101,8 +206,26 @@ const Room = ({ roomId, onLeave }) => {
     }));
 
     setFiles(prev => [...prev, ...newFiles]);
-    addLog(`Received ${newFiles.length} file(s) for transfer`);
+    addLog(`📦 ${newFiles.length} file(s) added`);
+
+    if (connectionStatus !== 'connected' || !peerRef.current) {
+      addLog('⚠️ Cannot send: Waiting for P2P connection...');
+      return;
+    }
+
+    for (const file of Array.from(fileList)) {
+      try {
+        addLog(`🚀 Starting transfer: ${file.name}`);
+
+        console.log("File ready for ChunkManager:", file);
+
+      } catch (error) {
+        addLog(`❌ Transfer failed: ${file.name}`);
+        console.error(error);
+      }
+    }
   };
+
 
   return (
     <motion.div
@@ -140,8 +263,8 @@ const Room = ({ roomId, onLeave }) => {
         <motion.div
           variants={itemVariants}
           className={`lg:col-span-2 relative backdrop-blur-2xl rounded-lg p-12 min-h-[300px] flex flex-col items-center justify-center overflow-hidden transition-all duration-300 ${isDragOver
-              ? 'border-2 border-dashed border-[#FF5C00]'
-              : 'border border-white/5'
+            ? 'border-2 border-dashed border-[#FF5C00]'
+            : 'border border-white/5'
             }`}
           style={{
             background: 'linear-gradient(135deg, rgba(26, 26, 26, 0.8) 0%, rgba(15, 15, 15, 0.9) 100%)',
