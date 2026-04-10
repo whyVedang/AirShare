@@ -13,8 +13,20 @@ const Room = ({ roomId, onLeave }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState([]);
   const [logs, setLogs] = useState([]);
+  const [copied, setCopied] = useState(false);
+
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(roomId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy to clipboard', err);
+    }
+  };
 
   const logContainerRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const containerVariants = {
     hidden: { opacity: 0 },
@@ -56,10 +68,10 @@ const Room = ({ roomId, onLeave }) => {
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
-    const client = new SignalingClient('ws://localhost:3000');
+    const client = new SignalingClient('ws://localhost:5000');
     clientRef.current = client;
 
-    addLog('🔌 Connecting to signaling server...');
+    addLog('Connecting to signaling server...');
 
     registerHandlers(client);
 
@@ -68,7 +80,7 @@ const Room = ({ roomId, onLeave }) => {
         setConnectionStatus('connecting');
         addLog('Connected to signaling server');
         client.joinRoom(roomId);
-        addLog(`🏠 Joined room: ${roomId}`);
+        addLog(`Joined room: ${roomId}`);
       })
       .catch((err) => {
         setConnectionStatus('failed');
@@ -78,12 +90,21 @@ const Room = ({ roomId, onLeave }) => {
 
     return () => {
       client.disconnect();
-      addLog('🔌 Disconnected');
+      addLog('Disconnected');
       didInit.current = false
     };
   }, [roomId]);
 
   const registerHandlers = (client) => {
+
+    client.on('onReconnecting', ({ attempt, delay }) => {
+      setConnectionStatus('connecting');
+      addLog(`Connection lost. Reconnecting... (attempt ${attempt}, ${delay / 1000}s)`);
+    });
+
+    client.on('onReconnected', () => {
+      addLog('Reconnected to signaling server');
+    });
 
     client.on('onRoomJoined', (peers) => {
       addLog(`👥 Existing peers: ${peers.length}`);
@@ -96,37 +117,55 @@ const Room = ({ roomId, onLeave }) => {
       }
     });
 
+    // INITIATOR path: We are an existing peer and a new peer just joined.
+    // Only existing peers send offers — this is how we prevent WebRTC glare.
     client.on('onPeerJoined', async (peerID) => {
-      addLog(`🔥 Peer joined: ${peerID}`);
+      addLog(`Peer joined: ${peerID}`);
 
+      cleanupPeer();
       const peer = new PeerEngine();
+      peer.initialize();
       peerRef.current = peer;
 
       setupPeer(peer, peerID);
+      
+      // We MUST open the data channel BEFORE creating the offer
+      // Otherwise the WebRTC offer has nothing to negotiate!
+      peer.createDataChannel('airshare-data');
 
-      const offer = peer.createOffer()
-      client.sendOffer(peerID, offer);
-      addLog('📤 Sent offer');
+      try {
+        const offer = await peer.createOffer();
+        client.sendOffer(peerID, offer);
+        addLog('Sent offer');
+      } catch (err) {
+        console.error("Failed to create offer:", err);
+      }
     });
 
-    client.on('onOffer', async ({ sdp, targetPeerID }) => {
-      addLog('📩 Received offer');
+    // RECEIVER path: We just joined and received an offer from an existing peer.
+    // We NEVER send an offer here — we only answer.
+    client.on('onOffer', async ({ sdp, from }) => {
+      addLog('Received offer');
 
+      cleanupPeer();
       const peer = new PeerEngine();
+      peer.initialize();
       peerRef.current = peer;
 
-      setupPeer(peer, payload.from || payload.targetPeerID);
+      setupPeer(peer, from);
 
-      await peer.setRemoteDescription(sdp);
-
-      const answer = await peer.createAnswer();
-      client.sendAnswer(targetPeerID, answer);
-
-      addLog('📤 Sent answer');
+      try {
+        await peer.setRemoteDescription(sdp);
+        const answer = await peer.createAnswer();
+        client.sendAnswer(from, answer);
+        addLog('Sent answer');
+      } catch (err) {
+        console.error("Failed to handle offer:", err);
+      }
     });
 
     client.on('onAnswer', async ({ sdp }) => {
-      addLog('📩 Received answer');
+      addLog('Received answer');
       if (!peerRef.current) return;
       await peerRef.current.setRemoteDescription(sdp);
     });
@@ -135,28 +174,43 @@ const Room = ({ roomId, onLeave }) => {
       addLog('📡 Received ICE candidate');
       if (!peerRef.current) return;
       try {
-        await peerRef.current.addIceCandidate(payload.candidate);
+        await peerRef.current.addIceCandidate(candidate);
       } catch (err) {
         console.warn("ICE Candidate arrived too early, or failed:", err);
       }
     });
   };
 
+  const cleanupPeer = () => {
+    if (peerRef.current) {
+      try {
+        peerRef.current.close();
+      } catch (e) {
+        // ignore close errors on already-dead engines
+      }
+      peerRef.current = null;
+    }
+  };
+
   const setupPeer = (peer, targetPeerID) => {
     const client = clientRef.current;
 
-    peer.onIceCandidate((candidate) => {
+    peer.on('onIceCandidate', (candidate) => {
       client.sendIceCandidate(targetPeerID, candidate);
-      addLog('📡 Sent ICE candidate');
+      addLog('Sent ICE candidate');
     });
 
-    peer.onConnectionStateChange((state) => {
-      addLog(`🔗 State: ${state}`);
+    peer.on('onConnectionStateChange', ({ state }) => {
+      addLog(`State: ${state}`);
 
       if (state === 'connected') {
         setConnectionStatus('connected');
-        addLog('🎉 P2P connection established!');
+        addLog('P2P connection established!');
       }
+    });
+
+    peer.on('onDataChannelOpen', ({ label }) => {
+      addLog(`Data Channel Open: ${label}`);
     });
   };
 
@@ -192,12 +246,10 @@ const Room = ({ roomId, onLeave }) => {
     return extensionMap[ext] || '📎';
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragOver(false);
+  const processFiles = (filesArray) => {
+    if (!filesArray || filesArray.length === 0) return;
 
-    const newFiles = Array.from(fileList).map((file, idx) => ({
+    const newFiles = filesArray.map((file, idx) => ({
       id: Date.now() + idx,
       name: file.name,
       size: file.size,
@@ -206,23 +258,42 @@ const Room = ({ roomId, onLeave }) => {
     }));
 
     setFiles(prev => [...prev, ...newFiles]);
-    addLog(`📦 ${newFiles.length} file(s) added`);
+    addLog(`${newFiles.length} file(s) added`);
 
     if (connectionStatus !== 'connected' || !peerRef.current) {
-      addLog('⚠️ Cannot send: Waiting for P2P connection...');
+      addLog('Cannot send: Waiting for P2P connection...');
       return;
     }
 
-    for (const file of Array.from(fileList)) {
+    for (const file of filesArray) {
       try {
-        addLog(`🚀 Starting transfer: ${file.name}`);
-
+        addLog(`Starting transfer: ${file.name}`);
         console.log("File ready for ChunkManager:", file);
-
       } catch (error) {
-        addLog(`❌ Transfer failed: ${file.name}`);
+        addLog(`Transfer failed: ${file.name}`);
         console.error(error);
       }
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    if (!e.dataTransfer || !e.dataTransfer.files) return;
+    processFiles(Array.from(e.dataTransfer.files));
+  };
+
+  const handleFileInput = (e) => {
+    if (!e.target.files) return;
+    processFiles(Array.from(e.target.files));
+    e.target.value = null; // reset so they can select the same file again if needed
+  };
+
+  const handleZoneClick = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
     }
   };
 
@@ -240,9 +311,23 @@ const Room = ({ roomId, onLeave }) => {
           <h1 className="text-6xl font-bold text-white mb-2 tracking-tight">
             Transfer <span className="text-[#FF5C00]">Room</span>
           </h1>
-          <p className="text-gray-500 text-sm">
-            Code: <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-gray-500 text-sm">
+              Code: <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>
+            </p>
+            <button
+              onClick={copyToClipboard}
+              className="p-1.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition-colors relative"
+              title="Copy Room Code"
+            >
+              {copied && (
+                <span className="text-green-500 text-xs font-bold absolute -top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap bg-black/80 px-2 py-1 rounded">Copied!</span>
+              )}
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </button>
+          </div>
         </div>
         <motion.button
           onClick={onLeave}
@@ -262,7 +347,11 @@ const Room = ({ roomId, onLeave }) => {
         {/* File Drop Zone */}
         <motion.div
           variants={itemVariants}
-          className={`lg:col-span-2 relative backdrop-blur-2xl rounded-lg p-12 min-h-[300px] flex flex-col items-center justify-center overflow-hidden transition-all duration-300 ${isDragOver
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={handleZoneClick}
+          className={`lg:col-span-2 relative backdrop-blur-2xl rounded-lg p-12 min-h-[300px] flex flex-col items-center justify-center overflow-hidden transition-all duration-300 cursor-pointer ${isDragOver
             ? 'border-2 border-dashed border-[#FF5C00]'
             : 'border border-white/5'
             }`}
@@ -272,12 +361,16 @@ const Room = ({ roomId, onLeave }) => {
               ? '0 0 30px rgba(255, 92, 0, 0.4), inset 0 0 20px rgba(255, 92, 0, 0.1)'
               : '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)'
           }}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
         >
+          <input 
+            type="file" 
+            multiple 
+            className="hidden" 
+            ref={fileInputRef} 
+            onChange={handleFileInput} 
+          />
           {/* Subtle gradient overlay */}
-          <div className="absolute top-0 right-0 w-40 h-40 bg-gradient-to-bl from-[#FF5C00]/10 to-transparent" />
+          <div className="absolute top-0 right-0 w-40 h-40 bg-gradient-to-bl from-[#FF5C00]/10 to-transparent pointer-events-none" />
 
           {files.length === 0 ? (
             <div className="text-center">
@@ -362,7 +455,9 @@ const Room = ({ roomId, onLeave }) => {
 
             <div className="border-t border-white/5 pt-4">
               <p className="text-gray-500 text-xs mb-2 uppercase tracking-widest">Peers</p>
-              <p className="text-white font-mono text-sm">0 Connected</p>
+              <p className="text-white font-mono text-sm">
+                {connectionStatus === 'connected' ? '1' : '0'} Connected
+              </p>
             </div>
 
             <div className="border-t border-white/5 pt-4">
