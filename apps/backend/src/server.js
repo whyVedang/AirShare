@@ -1,9 +1,6 @@
 import app from "./app.js";
 import { config } from "./config/config.env.js";
 import http from "http";
-import { Server } from "socket.io";
-import { createAdapter } from "@socket.io/redis-adapter";
-import { redisPub, redisSub } from "./config/config.redis.js";
 import { WebSocketINIT } from "./socket/index.js";
 import logger from "./config/config.logger.js";
 

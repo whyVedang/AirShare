@@ -86,7 +86,8 @@ class ChunkManager {
     }
     if (msg.type === "file-end") {
       this.totalChunks = msg.totalChunks;
-      return { type: 'complete', value: this.assembleChunks() };
+      const filename = this.fileMetadata?.name;
+      return { type: 'complete', value: this.assembleChunks(), filename };
     }
   }
 
@@ -114,3 +115,5 @@ class ChunkManager {
     this.receivedBytes = 0;
   }
 }
+
+export default ChunkManager;

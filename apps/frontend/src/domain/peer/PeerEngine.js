@@ -19,7 +19,6 @@ class PeerEngine {
       // SCTP settings for data channel
       dataChannelOptions: {
         ordered: false, // Allow out-of-order delivery to prevent head-of-line blocking
-        maxRetransmits: 3, // Retry failed chunks
         ...config.dataChannelOptions
       }
     };

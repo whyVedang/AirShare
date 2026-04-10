@@ -7,8 +7,14 @@ class LatencyController {
   }
 
   recordPing() {
+    // TTL sweep: purge any orphaned pings older than 10s
+    const now = Date.now();
+    for (const [id, time] of this.pendingPings) {
+      if (now - time > 10000) this.pendingPings.delete(id);
+    }
+
     const id=++this.pingCount;
-    const lastPingTime = Date.now();
+    const lastPingTime = now;
     this.pendingPings.set(id,lastPingTime)
 
     return { type: "ping", id };
