@@ -3,7 +3,7 @@ import CongestionController from "./congestionControl.js";
 import ChunkManager from "./ChunkManager.js"; // Make sure this path is correct!
 
 class TransferController {
-    constructor(peerEngine, onProgress, onComplete) {
+    constructor(peerEngine, onProgress, onComplete, onLatency) {
         this.peerEngine = peerEngine;
         this.channel = null;
 
@@ -15,19 +15,28 @@ class TransferController {
         // UI Callbacks passed from Room.jsx
         this.onProgress = onProgress || (() => { });
         this.onComplete = onComplete || (() => { });
+        this.onLatency = onLatency || (() => { });
 
         this.messageInterval = null;
+        this.handleMessage = this.handleMessage.bind(this);
     }
 
     attachChannel(channel) {
         this.channel = channel;
-        this.setMessageHandler();
+        this.channel.addEventListener("message", this.handleMessage);
     }
 
-    setMessageHandler() {
-        this.channel.addEventListener("message", async (event) => {
-            try {
-                if (typeof event.data === "string") {
+    detachChannel() {
+        if (this.channel) {
+            this.channel.removeEventListener("message", this.handleMessage);
+            this.channel = null;
+        }
+        this.stopLatencyChecks();
+    }
+
+    async handleMessage(event) {
+        try {
+            if (typeof event.data === "string") {
                     const data = JSON.parse(event.data);
 
                     if (data.type === "ping") {
@@ -37,6 +46,10 @@ class TransferController {
 
                     if (data.type === "pong") {
                         this.latencyController.recordPong(data.id);
+                        const avgRtt = this.latencyController.getAverageRTT();
+                        if (avgRtt > 0) {
+                            this.onLatency(Math.round(avgRtt));
+                        }
                         return; // We handled it, stop here.
                     }
                 }
@@ -55,14 +68,13 @@ class TransferController {
                         break;
 
                     case 'complete':
-                        this.onComplete(result.value, this.chunkManager.fileMetadata?.name);
+                        this.onComplete(result.value, result.filename);
                         break;
                 }
 
             } catch (error) {
                 console.error("Transfer Error:", error);
             }
-        });
     }
 
     startLatencyChecks() {
@@ -89,19 +101,18 @@ class TransferController {
             throw new Error("Data channel is not open");
         }
 
-        this.startLatencyChecks();
-
-        try {
-            await this.chunkManager.sendFile(
-                file,
-                this.channel,
-                this.congestionController,
-                this.latencyController,
-                (progress) => this.onProgress(progress)
-            );
-        } finally {
-            this.stopLatencyChecks();
+        // Make sure it's running
+        if (!this.messageInterval) {
+            this.startLatencyChecks();
         }
+
+        await this.chunkManager.sendFile(
+            file,
+            this.channel,
+            this.congestionController,
+            this.latencyController,
+            (progress) => this.onProgress(progress)
+        );
     }
 }
 

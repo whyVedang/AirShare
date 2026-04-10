@@ -1,5 +1,5 @@
 class SignalingClient {
-  constructor(serverUrl = 'ws://localhost:5000') {
+  constructor(serverUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:5000') {
     this.serverUrl = serverUrl;
     this.socket = null;
     this.isConnected = false;

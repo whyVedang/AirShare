@@ -110,7 +110,7 @@ const Developers = ({ onBack }) => {
                   Signaling Server
                 </h3>
                 <p className="text-gray-300 text-sm font-['JetBrains_Mono',monospace]">
-                  <span className="text-gray-500">Framework:</span> Node.js + Socket.io
+                  <span className="text-gray-500">Framework:</span> Node.js + ws (WebSocket)
                   <br />
                   <span className="text-gray-500">Role:</span> SDP/ICE candidate exchange only
                   <br />
@@ -129,9 +129,9 @@ const Developers = ({ onBack }) => {
                 { name: 'React 18', version: '18.2.0', type: 'UI Framework' },
                 { name: 'Canvas API', version: 'Native', type: 'Graphics' },
                 { name: 'Framer Motion', version: '^12.0.0', type: 'Animations' },
-                { name: 'Vite', version: '5.4.21', type: 'Build Tool' },
+                { name: 'Vite', version: '8.0.7', type: 'Build Tool' },
                 { name: 'Tailwind CSS', version: '3.4.1', type: 'Styling' },
-                { name: 'Socket.io-client', version: '4.6.1', type: 'Signaling' },
+                { name: 'WebSocket (ws)', version: 'Native', type: 'Signaling' },
                 { name: 'Zustand', version: '4.5.0', type: 'State Management' },
                 { name: 'WebRTC', version: 'Native', type: 'P2P Transfer' },
               ].map((tech, i) => (
