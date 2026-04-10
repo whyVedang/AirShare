@@ -1,15 +1,22 @@
 import React, { useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
   const [roomId, setRoomId] = useState('');
   const [createdRoomId, setCreatedRoomId] = useState('');
   const [copied, setCopied] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setCreatedRoomId(newRoomId);
-
+    try {
+      await navigator.clipboard.writeText(newRoomId);
+    } catch (err) {
+      console.error('Failed to copy code to clipboard:', err);
+    }
+    
+    setIsGenerating(true);
+    
     if (onJoinRoom) {
       setTimeout(() => {
         onJoinRoom(newRoomId);
