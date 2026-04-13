@@ -1,22 +1,10 @@
-/**
- * SignalingClient - Lightweight Socket.io wrapper for WebRTC handshake
- * 
- * Handles ephemeral SDP/ICE exchange for P2P connection establishment.
- * Once WebRTC connection is established, this can go idle to maintain
- * data sovereignty (serverless architecture).
- */
-
-import io from 'socket.io-client';
-
 class SignalingClient {
-  constructor(serverUrl = 'http://localhost:3000') {
+  constructor(serverUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:5000') {
     this.serverUrl = serverUrl;
     this.socket = null;
     this.isConnected = false;
     this.roomId = null;
     this.peerId = null;
-    
-    // Event handlers
     this.handlers = {
       onRoomJoined: null,
       onPeerJoined: null,
@@ -24,253 +12,193 @@ class SignalingClient {
       onAnswer: null,
       onIceCandidate: null,
       onPeerLeft: null,
-      onError: null
+      onError: null,
+      onReconnecting: null,
+      onReconnected: null,
     };
+
+    // Reconnection state
+    this._intentionalDisconnect = false;
+    this._reconnectAttempts = 0;
+    this._maxReconnectAttempts = 8;
+    this._reconnectTimer = null;
   }
 
-  /**
-   * Connects to the signaling server
-   * @returns {Promise<void>}
-   */
   connect() {
     return new Promise((resolve, reject) => {
-      if (this.isConnected) {
-        resolve();
-        return;
+      if (this.isConnected) return resolve();
+
+      // Generate a stable peerId that survives reconnects within the same session
+      if (!this.peerId) {
+        this.peerId = crypto.randomUUID();
       }
 
-      this.socket = io(this.serverUrl, {
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000
-      });
+      this.socket = new WebSocket(this.serverUrl);
 
-      this.socket.on('connect', () => {
+      this.socket.onopen = () => {
         this.isConnected = true;
-        this.peerId = this.socket.id;
-        console.log(`[SignalingClient] Connected to server. Peer ID: ${this.peerId}`);
+        this._reconnectAttempts = 0;
+        console.log('[WS] Connected:', this.peerId);
         resolve();
-      });
+      };
 
-      this.socket.on('connect_error', (error) => {
-        console.error('[SignalingClient] Connection error:', error);
+      this.socket.onerror = (error) => {
+        console.error('[WS] Error:', error);
         this._triggerHandler('onError', error);
-        reject(error);
-      });
-
-      this._setupEventListeners();
-    });
-  }
-
-  /**
-   * Sets up Socket.io event listeners for WebRTC signaling
-   * @private
-   */
-  _setupEventListeners() {
-    // Room events
-    this.socket.on('room:joined', (data) => {
-      console.log('[SignalingClient] Joined room:', data);
-      this.roomId = data.roomId;
-      this._triggerHandler('onRoomJoined', data);
-    });
-
-    this.socket.on('peer:joined', (data) => {
-      console.log('[SignalingClient] Peer joined:', data);
-      this._triggerHandler('onPeerJoined', data);
-    });
-
-    this.socket.on('peer:left', (data) => {
-      console.log('[SignalingClient] Peer left:', data);
-      this._triggerHandler('onPeerLeft', data);
-    });
-
-    // WebRTC signaling events
-    this.socket.on('webrtc:offer', (data) => {
-      console.log('[SignalingClient] Received offer from:', data.from);
-      this._triggerHandler('onOffer', data);
-    });
-
-    this.socket.on('webrtc:answer', (data) => {
-      console.log('[SignalingClient] Received answer from:', data.from);
-      this._triggerHandler('onAnswer', data);
-    });
-
-    this.socket.on('webrtc:ice-candidate', (data) => {
-      console.log('[SignalingClient] Received ICE candidate from:', data.from);
-      this._triggerHandler('onIceCandidate', data);
-    });
-
-    // Error handling
-    this.socket.on('error', (error) => {
-      console.error('[SignalingClient] Server error:', error);
-      this._triggerHandler('onError', error);
-    });
-  }
-
-  /**
-   * Joins or creates a room for P2P connection
-   * @param {string} roomId - Room identifier
-   * @returns {Promise<Object>}
-   */
-  joinRoom(roomId) {
-    return new Promise((resolve, reject) => {
-      if (!this.isConnected) {
-        reject(new Error('Not connected to signaling server'));
-        return;
-      }
-
-      this.socket.emit('room:join', { roomId }, (response) => {
-        if (response.error) {
-          reject(new Error(response.error));
-        } else {
-          this.roomId = roomId;
-          resolve(response);
+        // Only reject on first-ever connection attempt, not during reconnects
+        if (this._reconnectAttempts === 0) {
+          reject(error);
         }
-      });
+      };
+
+      this.socket.onclose = () => {
+        console.log('[WS] Disconnected');
+        this.isConnected = false;
+        this.socket = null;
+
+        // Only auto-reconnect if this was NOT caused by us calling disconnect()
+        if (!this._intentionalDisconnect) {
+          this._scheduleReconnect();
+        }
+      };
+
+      this.socket.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        this._handleMessage(data);
+      };
     });
   }
 
-  /**
-   * Sends SDP offer to peer
-   * @param {string} targetPeerId - Target peer ID
-   * @param {RTCSessionDescriptionInit} offer - SDP offer
-   */
-  sendOffer(targetPeerId, offer) {
-    if (!this.isConnected) {
-      throw new Error('Not connected to signaling server');
+  _scheduleReconnect() {
+    if (this._reconnectAttempts >= this._maxReconnectAttempts) {
+      console.error('[WS] Max reconnection attempts reached. Giving up.');
+      return;
     }
 
-    this.socket.emit('webrtc:offer', {
-      to: targetPeerId,
-      from: this.peerId,
-      roomId: this.roomId,
-      offer
-    });
+    // Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped at 16s)
+    const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 16000);
+    this._reconnectAttempts++;
 
-    console.log('[SignalingClient] Sent offer to:', targetPeerId);
+    console.log(`[WS] Reconnecting in ${delay}ms... (attempt ${this._reconnectAttempts})`);
+    this._triggerHandler('onReconnecting', { attempt: this._reconnectAttempts, delay });
+
+    this._reconnectTimer = setTimeout(async () => {
+      try {
+        await this.connect();
+
+        // After reconnecting, automatically re-join the room we were in
+        if (this.roomId) {
+          console.log('[WS] Re-joining room after reconnect:', this.roomId);
+          this.joinRoom(this.roomId);
+        }
+
+        this._triggerHandler('onReconnected', { peerId: this.peerId });
+      } catch (err) {
+        // _scheduleReconnect will be triggered again via the socket.onclose handler
+        console.warn('[WS] Reconnect attempt failed:', err);
+      }
+    }, delay);
   }
 
-  /**
-   * Sends SDP answer to peer
-   * @param {string} targetPeerId - Target peer ID
-   * @param {RTCSessionDescriptionInit} answer - SDP answer
-   */
-  sendAnswer(targetPeerId, answer) {
-    if (!this.isConnected) {
-      throw new Error('Not connected to signaling server');
+  _handleMessage(data) {
+    const { type, payload } = data;
+
+    switch (type) {
+      case 'existing-peers':
+        this._triggerHandler('onRoomJoined', payload);
+        break;
+
+      case 'new-peer':
+        this._triggerHandler('onPeerJoined', payload);
+        break;
+
+      case 'peer-disconnected':
+        this._triggerHandler('onPeerLeft', payload);
+        break;
+
+      case 'offer':
+        this._triggerHandler('onOffer', payload);
+        break;
+
+      case 'answer':
+        this._triggerHandler('onAnswer', payload);
+        break;
+
+      case 'ice-candidate':
+        this._triggerHandler('onIceCandidate', payload);
+        break;
+
+      default:
+        console.warn('[WS] Unknown message:', type);
     }
-
-    this.socket.emit('webrtc:answer', {
-      to: targetPeerId,
-      from: this.peerId,
-      roomId: this.roomId,
-      answer
-    });
-
-    console.log('[SignalingClient] Sent answer to:', targetPeerId);
   }
 
-  /**
-   * Sends ICE candidate to peer
-   * @param {string} targetPeerId - Target peer ID
-   * @param {RTCIceCandidate} candidate - ICE candidate
-   */
-  sendIceCandidate(targetPeerId, candidate) {
-    if (!this.isConnected) {
-      throw new Error('Not connected to signaling server');
+  _send(type, payload) {
+    if (!this.isConnected || !this.socket) {
+      console.warn('[WS] Cannot send — not connected.');
+      return;
     }
+    this.socket.send(JSON.stringify({ type, payload }));
+  }
 
-    this.socket.emit('webrtc:ice-candidate', {
-      to: targetPeerId,
-      from: this.peerId,
-      roomId: this.roomId,
+  joinRoom(roomID) {
+    this.roomId = roomID;
+    this._send('join-room', {
+      roomID,
+      peerID: this.peerId
+    });
+  }
+
+  sendOffer(targetPeerID, offer) {
+    this._send('offer', {
+      roomID: this.roomId,
+      targetPeerID,
+      sdp: offer
+    });
+  }
+
+  sendAnswer(targetPeerID, answer) {
+    this._send('answer', {
+      roomID: this.roomId,
+      targetPeerID,
+      sdp: answer
+    });
+  }
+
+  sendIceCandidate(targetPeerID, candidate) {
+    this._send('ice-candidate', {
+      roomID: this.roomId,
+      targetPeerID,
       candidate
     });
-
-    console.log('[SignalingClient] Sent ICE candidate to:', targetPeerId);
   }
 
-  /**
-   * Registers event handlers
-   * @param {string} event - Event name
-   * @param {Function} handler - Event handler function
-   */
   on(event, handler) {
     if (this.handlers.hasOwnProperty(event)) {
       this.handlers[event] = handler;
-    } else {
-      console.warn(`[SignalingClient] Unknown event: ${event}`);
     }
   }
 
-  /**
-   * Triggers registered event handler
-   * @private
-   */
   _triggerHandler(event, data) {
     if (this.handlers[event]) {
       this.handlers[event](data);
     }
   }
 
-  /**
-   * Goes idle after WebRTC connection is established
-   * Reduces server load and maintains data sovereignty
-   */
-  goIdle() {
-    if (!this.socket) return;
-
-    console.log('[SignalingClient] Going idle - WebRTC connection established');
-    
-    // Remove message listeners but keep connection for potential reconnection
-    this.socket.off('webrtc:offer');
-    this.socket.off('webrtc:answer');
-    this.socket.off('webrtc:ice-candidate');
-    
-    // Optionally reduce reconnection attempts
-    this.socket.io.opts.reconnectionAttempts = 2;
-  }
-
-  /**
-   * Disconnects from signaling server (ephemeral handshake complete)
-   */
   disconnect() {
-    if (!this.socket) return;
+    // Flag as intentional so onclose does NOT trigger auto-reconnect
+    this._intentionalDisconnect = true;
 
-    console.log('[SignalingClient] Disconnecting from signaling server');
-    
-    if (this.roomId) {
-      this.socket.emit('room:leave', { roomId: this.roomId });
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
     }
 
-    this.socket.disconnect();
-    this.socket = null;
-    this.isConnected = false;
-    this.roomId = null;
-    
-    console.log('[SignalingClient] Disconnected - P2P connection is direct now');
-  }
-
-  /**
-   * Gets current connection state
-   * @returns {Object}
-   */
-  getState() {
-    return {
-      isConnected: this.isConnected,
-      peerId: this.peerId,
-      roomId: this.roomId,
-      serverUrl: this.serverUrl
-    };
-  }
-
-  /**
-   * Checks if connected to signaling server
-   * @returns {boolean}
-   */
-  isActive() {
-    return this.isConnected && this.socket !== null;
+    if (this.socket) {
+      this.socket.close();
+      this.socket = null;
+      this.isConnected = false;
+    }
   }
 }
 

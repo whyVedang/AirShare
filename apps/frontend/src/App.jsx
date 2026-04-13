@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import BackgroundEngine from '../components/BackgroundEngine';
-import Home from '../pages/Home';
-import Room from '../pages/Room';
-import About from '../pages/About';
-import Developers from '../pages/Developers';
+import BackgroundEngine from './components/BackgroundEngine';
+import Home from './pages/Home';
+import Room from './pages/Room';
+import About from './pages/About';
+import Developers from './pages/Developers';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },

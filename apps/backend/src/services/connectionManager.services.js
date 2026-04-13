@@ -96,7 +96,13 @@ export const broadcast = async (roomID, excludePeerID, message) => {
 export const relaySignal = async (roomID, fromPeerID, targetPeerID, message) => {
     await refreshTTL(roomID);
     const targetWs = localPeers.get(targetPeerID);
-    sendData(targetWs, { ...message, from: fromPeerID });
+    sendData(targetWs, {
+        type: message.type,
+        payload: {
+            ...message.payload,
+            from: fromPeerID
+        }
+    });
 };
 
 export const handleDisconnect = async (peerID) => {

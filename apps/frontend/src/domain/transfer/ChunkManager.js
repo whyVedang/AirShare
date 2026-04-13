@@ -1,191 +1,118 @@
-/**
- * ChunkManager - Handles file slicing and reassembly for P2P transfer
- * 
- * Implements efficient chunking strategy (16KB-64KB) to prevent memory issues
- * and enable reliable transfer over WebRTC DataChannels using SCTP.
- */
-
 class ChunkManager {
-  constructor(chunkSize = 16 * 1024) {
-    // Default 16KB chunks, can scale up to 64KB
-    this.chunkSize = this._validateChunkSize(chunkSize);
-    this.chunks = [];
-    this.totalChunks = 0;
-    this.receivedChunks = new Map(); // chunkIndex -> ArrayBuffer
+  constructor() {
+    this.receivedChunks = new Map();
     this.fileMetadata = null;
+    this.totalChunks = 0;
+    this.receivedBytes = 0;
   }
 
-  /**
-   * Validates chunk size is within acceptable range (16KB - 64KB)
-   */
-  _validateChunkSize(size) {
-    const MIN_CHUNK = 16 * 1024; // 16KB
-    const MAX_CHUNK = 64 * 1024; // 64KB
-    
-    if (size < MIN_CHUNK) return MIN_CHUNK;
-    if (size > MAX_CHUNK) return MAX_CHUNK;
-    return size;
-  }
+  async sendFile(file, channel, congestionController, latencyController, onProgress) {
+    const maxBuffer = 256 * 1024;
+    channel.bufferedAmountLowThreshold = maxBuffer / 2;
 
-  /**
-   * Slices a file into chunks of specified size
-   * @param {File} file - The file to slice
-   * @returns {Promise<Array<{index: number, data: ArrayBuffer, metadata: Object}>>}
-   */
-  async sliceFile(file) {
-    if (!file || !(file instanceof File || file instanceof Blob)) {
-      throw new Error('Invalid file object provided');
-    }
+    // 1. Send Metadata
+    channel.send(JSON.stringify({
+      type: "file-meta",
+      metadata: {
+        name: file.name,
+        size: file.size,
+        type: file.type || 'application/octet-stream'
+      }
+    }));
 
-    const chunks = [];
-    const totalSize = file.size;
-    this.totalChunks = Math.ceil(totalSize / this.chunkSize);
-    
-    // Store file metadata for reassembly
-    this.fileMetadata = {
-      name: file.name || 'unknown',
-      size: totalSize,
-      type: file.type || 'application/octet-stream',
-      lastModified: file.lastModified || Date.now(),
-      totalChunks: this.totalChunks
-    };
+    let offset = 0;
+    let chunkIndex = 0;
 
-    for (let i = 0; i < this.totalChunks; i++) {
-      const start = i * this.chunkSize;
-      const end = Math.min(start + this.chunkSize, totalSize);
-      const blob = file.slice(start, end);
-      
-      // Convert to ArrayBuffer for WebRTC DataChannel
+    while (offset < file.size) {
+      // Congestion Control
+      const avgRTT = latencyController.getAverageRTT();
+      congestionController.update(avgRTT, channel.bufferedAmount);
+      const chunkSize = congestionController.getChunkSize();
+
+      // Backpressure
+      if (channel.bufferedAmount >= maxBuffer) {
+        await this.waitForBufferLow(channel);
+      }
+
+      // Slice & Prepare Binary Packet
+      const blob = file.slice(offset, offset + chunkSize);
       const arrayBuffer = await blob.arrayBuffer();
-      
-      chunks.push({
-        index: i,
-        data: arrayBuffer,
-        size: arrayBuffer.byteLength,
-        isLast: i === this.totalChunks - 1
-      });
+
+      const packet = new Uint8Array(4 + arrayBuffer.byteLength);
+      const view = new DataView(packet.buffer);
+      view.setUint32(0, chunkIndex); // Write index at start
+      packet.set(new Uint8Array(arrayBuffer), 4); // Write data after index
+
+      channel.send(packet);
+
+      offset += chunkSize;
+      chunkIndex++;
+
+      if (onProgress) {
+        onProgress(Math.min(100, Math.round((offset / file.size) * 100)));
+      }
     }
 
-    this.chunks = chunks;
-    return chunks;
+    // 3. Signal End
+    channel.send(JSON.stringify({ type: "file-end", totalChunks: chunkIndex }));
   }
 
-  /**
-   * Receives and stores a chunk for later assembly
-   * @param {number} index - Chunk index
-   * @param {ArrayBuffer} data - Chunk data
-   */
-  receiveChunk(index, data) {
-    if (!(data instanceof ArrayBuffer)) {
-      throw new Error('Chunk data must be an ArrayBuffer');
+  async waitForBufferLow(channel) {
+    return new Promise(resolve => {
+      const handler = () => {
+        channel.removeEventListener("bufferedamountlow", handler);
+        resolve();
+      };
+      channel.addEventListener("bufferedamountlow", handler);
+    });
+  }
+
+  handleIncomingData(data) {
+    if (data instanceof ArrayBuffer) {
+      // Extract Index from the first 4 bytes
+      const view = new DataView(data);
+      const index = view.getUint32(0);
+      const chunkData = data.slice(4); // Actual file content
+
+      this.receivedChunks.set(index, chunkData);
+      this.receivedBytes += chunkData.byteLength;
+      return { type: 'progress', value: this.getReceiverProgress() };
+    } 
+    
+    const msg = JSON.parse(data);
+    if (msg.type === "file-meta") {
+      this.fileMetadata = msg.metadata;
+      return { type: 'meta', value: msg.metadata };
     }
-
-    this.receivedChunks.set(index, data);
+    if (msg.type === "file-end") {
+      this.totalChunks = msg.totalChunks;
+      const filename = this.fileMetadata?.name;
+      return { type: 'complete', value: this.assembleChunks(), filename };
+    }
   }
 
-  /**
-   * Sets metadata for file reassembly
-   * @param {Object} metadata - File metadata (name, size, type, totalChunks)
-   */
-  setFileMetadata(metadata) {
-    this.fileMetadata = metadata;
-    this.totalChunks = metadata.totalChunks;
-  }
-
-  /**
-   * Assembles received chunks into a complete file Blob
-   * @returns {Blob} - The reconstructed file
-   */
   assembleChunks() {
-    if (!this.fileMetadata) {
-      throw new Error('File metadata not set. Cannot assemble chunks.');
-    }
-
-    if (this.receivedChunks.size !== this.totalChunks) {
-      throw new Error(
-        `Incomplete transfer: ${this.receivedChunks.size}/${this.totalChunks} chunks received`
-      );
-    }
-
-    // Ensure chunks are in correct order
-    const orderedChunks = [];
+    const ordered = [];
     for (let i = 0; i < this.totalChunks; i++) {
       const chunk = this.receivedChunks.get(i);
-      if (!chunk) {
-        throw new Error(`Missing chunk at index ${i}`);
-      }
-      orderedChunks.push(chunk);
+      if (!chunk) throw new Error(`Missing chunk ${i}`);
+      ordered.push(chunk);
     }
-
-    // Create Blob from ArrayBuffers
-    const blob = new Blob(orderedChunks, { 
-      type: this.fileMetadata.type 
-    });
-
-    // Verify size matches metadata
-    if (blob.size !== this.fileMetadata.size) {
-      console.warn(
-        `Size mismatch: expected ${this.fileMetadata.size}, got ${blob.size}`
-      );
-    }
-
+    const blob = new Blob(ordered, { type: this.fileMetadata.type });
+    this.reset();
     return blob;
   }
 
-  /**
-   * Calculates current transfer progress
-   * @returns {number} - Progress percentage (0-100)
-   */
-  getProgress() {
-    if (this.totalChunks === 0) return 0;
-    
-    const received = this.receivedChunks.size;
-    return Math.round((received / this.totalChunks) * 100);
+  getReceiverProgress() {
+    if (!this.fileMetadata) return 0;
+    return Math.min(100, Math.round((this.receivedBytes / this.fileMetadata.size) * 100));
   }
 
-  /**
-   * Returns detailed transfer statistics
-   * @returns {Object} - Transfer stats
-   */
-  getStats() {
-    const receivedCount = this.receivedChunks.size;
-    const receivedBytes = Array.from(this.receivedChunks.values())
-      .reduce((sum, chunk) => sum + chunk.byteLength, 0);
-
-    return {
-      totalChunks: this.totalChunks,
-      receivedChunks: receivedCount,
-      progress: this.getProgress(),
-      receivedBytes,
-      totalBytes: this.fileMetadata?.size || 0,
-      isComplete: receivedCount === this.totalChunks && this.totalChunks > 0
-    };
-  }
-
-  /**
-   * Resets the chunk manager state
-   */
   reset() {
-    this.chunks = [];
     this.receivedChunks.clear();
-    this.totalChunks = 0;
     this.fileMetadata = null;
-  }
-
-  /**
-   * Gets the file metadata
-   * @returns {Object|null} - File metadata
-   */
-  getMetadata() {
-    return this.fileMetadata;
-  }
-
-  /**
-   * Checks if all chunks have been received
-   * @returns {boolean}
-   */
-  isTransferComplete() {
-    return this.receivedChunks.size === this.totalChunks && this.totalChunks > 0;
+    this.totalChunks = 0;
+    this.receivedBytes = 0;
   }
 }
 

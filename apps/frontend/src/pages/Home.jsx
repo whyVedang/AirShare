@@ -1,15 +1,20 @@
 import React, { useState } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
   const [roomId, setRoomId] = useState('');
-  const [createdRoomId, setCreatedRoomId] = useState('');
-  const [copied, setCopied] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setCreatedRoomId(newRoomId);
-
+    try {
+      await navigator.clipboard.writeText(newRoomId);
+    } catch (err) {
+      console.error('Failed to copy code to clipboard:', err);
+    }
+    
+    setIsGenerating(true);
+    
     if (onJoinRoom) {
       setTimeout(() => {
         onJoinRoom(newRoomId);
@@ -25,15 +30,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
     }
   };
 
-  const copyToClipboard = async (text) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy:', err);
-    }
-  };
+
 
   const containerVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -291,51 +288,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
               <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             </motion.button>
 
-            {createdRoomId && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                className="mt-6 p-5 rounded-lg border border-[#FF5C00]/20 bg-black/60"
-                style={{
-                  boxShadow: '0 0 20px rgba(255, 92, 0, 0.1), inset 0 1px 0 rgba(255, 92, 0, 0.1)'
-                }}
-              >
-                <p className="text-[#FF5C00]/60 text-xs font-medium mb-3 uppercase tracking-widest">
-                  Your Room Code
-                </p>
-                <div className="flex items-center gap-3">
-                  <code className="flex-1 text-3xl font-mono font-bold text-white tracking-wider">
-                    {createdRoomId}
-                  </code>
-                  <motion.div className="relative">
-                    <motion.button
-                      onClick={() => copyToClipboard(createdRoomId)}
-                      className="px-4 py-2.5 bg-white/10 hover:bg-white/20 border border-white/10 text-white rounded-md font-semibold text-sm transition-colors flex items-center gap-2"
-                      whileTap={{ scale: 0.95 }}
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                      </svg>
-                      Copy
-                    </motion.button>
-                    {copied && (
-                      <motion.div
-                        initial={{ opacity: 0, y: -8 }}
-                        animate={{ opacity: 1, y: -40 }}
-                        exit={{ opacity: 0, y: -8 }}
-                        transition={{ duration: 0.2 }}
-                        className="absolute right-0 bg-green-600 text-white text-xs font-semibold px-3 py-1.5 rounded-md whitespace-nowrap"
-                        style={{
-                          boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)'
-                        }}
-                      >
-                        ✓ Copied!
-                      </motion.div>
-                    )}
-                  </motion.div>
-                </div>
-              </motion.div>
-            )}
+
           </motion.div>
 
           {/* Join Room Card */}

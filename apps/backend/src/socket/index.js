@@ -34,21 +34,21 @@ const handleMessage = async (ws, data) => {
         case "offer":
             await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
                 type: "offer",
-                sdp: payload.sdp
+                payload: { sdp: payload.sdp }
             });
             break;
 
         case "answer":
             await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
                 type: "answer",
-                sdp: payload.sdp
+                payload: { sdp: payload.sdp }
             });
             break;
 
         case "ice-candidate":
             await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
                 type: "ice-candidate",
-                candidate: payload.candidate
+                payload: { candidate: payload.candidate }
             });
             break;
 
