@@ -10,11 +10,15 @@
 class PeerEngine {
   constructor(config = {}) {
     this.config = {
-      // Standard STUN servers for NAT traversal
+      // ICE servers for NAT traversal (STUN) and relay fallback (TURN)
+      // Configured via environment variables; falls back to Google STUN for local dev
       iceServers: config.iceServers || [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
+        { urls: import.meta.env.VITE_STUN_URL || 'stun:stun.l.google.com:19302' },
+        ...(import.meta.env.VITE_TURN_URL ? [{
+          urls: import.meta.env.VITE_TURN_URL,
+          username: import.meta.env.VITE_TURN_USERNAME || '',
+          credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
+        }] : [])
       ],
       // SCTP settings for data channel
       dataChannelOptions: {
