@@ -10,6 +10,13 @@ services:
       timeout: 5s
       retries: 3
 
+  coturn:
+    image: coturn/coturn:latest
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/turnserver.conf:ro
+    restart: unless-stopped
+
   backend:
     build:
       context: ./apps/backend
@@ -30,6 +37,10 @@ services:
       dockerfile: Dockerfile
       args:
         - VITE_WS_URL=ws://localhost:5000
+        - VITE_STUN_URL=stun:YOUR_SERVER_IP:3478
+        - VITE_TURN_URL=turn:YOUR_SERVER_IP:3478
+        - VITE_TURN_USERNAME=airshare
+        - VITE_TURN_CREDENTIAL=airshare-secret-password
     ports:
       - "80:80"
     depends_on:
