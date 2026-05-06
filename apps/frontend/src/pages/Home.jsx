@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTheme } from '../context/ThemeContext';
 
-const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
+const Home = ({ onJoinRoom, onNavigateToAbout }) => {
+  const { isDark } = useTheme();
   const [roomId, setRoomId] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -12,9 +14,9 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
     } catch (err) {
       console.error('Failed to copy code to clipboard:', err);
     }
-    
+
     setIsGenerating(true);
-    
+
     if (onJoinRoom) {
       setTimeout(() => {
         onJoinRoom(newRoomId);
@@ -234,8 +236,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             </motion.div>
 
             {/* Main Title */}
-            <h1 className="text-8xl font-black text-white mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
-              Air<span className="text-[#FF5C00]">Share</span>
+            <h1 className="text-8xl font-black mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
+              <span style={{ color: isDark ? '#ffffff' : '#000000' }}>Air</span><span className="text-[#FF5C00]">Share</span>
             </h1>
             <div className="h-1 bg-gradient-to-r from-[#FF5C00] via-[#FF8C42] to-transparent mt-4" />
           </div>
@@ -362,13 +364,6 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             whileHover={{ y: -2 }}
           >
             About
-          </motion.button>
-          <motion.button
-            onClick={() => onNavigateToDevelopers?.()}
-            className="px-6 py-2 text-gray-500 hover:text-[#FF5C00] text-sm font-medium tracking-wide border-b border-transparent hover:border-[#FF5C00]/50 transition-all"
-            whileHover={{ y: -2 }}
-          >
-            Developers
           </motion.button>
         </motion.div>
       </motion.div>
