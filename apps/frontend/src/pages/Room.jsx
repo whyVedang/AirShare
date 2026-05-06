@@ -7,16 +7,16 @@ import JSZip from 'jszip';
 
 const Room = ({ roomId, onLeave }) => {
   const clientRef = useRef(null);
-  
+
   // -- MESH NETWORK MAPS --
   const peersRef = useRef(new Map());
   const transfersRef = useRef(new Map());
-  
+
   const didInit = useRef(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [activePeers, setActivePeers] = useState([]);
   const [selectedPeers, setSelectedPeers] = useState(new Set());
-  
+
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState([]);
   const [logs, setLogs] = useState([]);
@@ -58,15 +58,15 @@ const Room = ({ roomId, onLeave }) => {
     registerHandlers(client);
 
     client.connect().then(() => {
-        setConnectionStatus('connected');
-        addLog('Connected to signaling server');
-        client.joinRoom(roomId);
-        addLog(`Joined room: ${roomId}`);
-      }).catch((err) => {
-        setConnectionStatus('failed');
-        addLog('Connection failed');
-        console.error(err);
-      });
+      setConnectionStatus('connected');
+      addLog('Connected to signaling server');
+      client.joinRoom(roomId);
+      addLog(`Joined room: ${roomId}`);
+    }).catch((err) => {
+      setConnectionStatus('failed');
+      addLog('Connection failed');
+      console.error(err);
+    });
 
     return () => {
       // Disconnect all peers securely
@@ -97,10 +97,10 @@ const Room = ({ roomId, onLeave }) => {
 
     client.on('onPeerJoined', async (peerID) => {
       addLog(`Peer joined: ${peerID}`);
-      
+
       setActivePeers(prev => [...prev, { id: peerID, status: 'connecting', latency: null }]);
       // Auto-select new peer by default
-      setSelectedPeers(prev => new Set([...prev, peerID])); 
+      setSelectedPeers(prev => new Set([...prev, peerID]));
 
       const peer = new PeerEngine();
       peer.initialize();
@@ -157,13 +157,13 @@ const Room = ({ roomId, onLeave }) => {
 
     client.on('onPeerLeft', (peerID) => {
       addLog(`Peer left: ${peerID}`);
-      
+
       const tc = transfersRef.current.get(peerID);
       if (tc) tc.detachChannel();
-      
+
       const peer = peersRef.current.get(peerID);
       if (peer) peer.close();
-      
+
       transfersRef.current.delete(peerID);
       peersRef.current.delete(peerID);
 
@@ -216,7 +216,7 @@ const Room = ({ roomId, onLeave }) => {
           setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, latency: avgLatency } : p));
         }
       );
-      
+
       tc.attachChannel(channel);
       transfersRef.current.set(targetPeerID, tc);
     });
@@ -273,14 +273,14 @@ const Room = ({ roomId, onLeave }) => {
 
     setFiles(prev => [...prev, ...newFiles]);
     fileQueueRef.current.push(...newFiles);
-    
+
     addLog(`${newFiles.length} file(s) queued for ${selectedPeers.size} peer(s)`);
 
     if (!isTransferringRef.current) {
       pumpQueue();
     }
   };
-  
+
   const pumpQueue = async () => {
     isTransferringRef.current = true;
 
@@ -290,11 +290,11 @@ const Room = ({ roomId, onLeave }) => {
       const targets = fileData.targets;
 
       const tcTargets = targets.map(id => transfersRef.current.get(id)).filter(Boolean);
-      
+
       if (tcTargets.length === 0) {
-          addLog(`Failed: Peers disconnected before send`);
-          setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Failed' } : f));
-          continue;
+        addLog(`Failed: Peers disconnected before send`);
+        setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Failed' } : f));
+        continue;
       }
 
       const startTime = Date.now();
@@ -303,15 +303,15 @@ const Room = ({ roomId, onLeave }) => {
 
       try {
         const results = await Promise.allSettled(tcTargets.map(tc => tc.send(rawFile)));
-        
+
         // If all of them rejected, then throw to hit the catch block
         if (results.every(r => r.status === 'rejected')) {
           throw new Error('All peers failed to receive');
         }
-        
+
         const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
         addLog(`Done: ${rawFile.name} in ${elapsedSec}s`);
-        
+
         setFiles(prev => prev.map(f =>
           f.id === fileData.id ? { ...f, status: `Done (${elapsedSec}s)`, progress: 100 } : f
         ));
@@ -327,79 +327,79 @@ const Room = ({ roomId, onLeave }) => {
   const readDirectory = async (dirEntry, zip, path) => {
     const dirReader = dirEntry.createReader();
     const entries = await new Promise((resolve) => {
-        const allEntries = [];
-        const readEntries = () => {
-            dirReader.readEntries((batch) => {
-                if (batch.length === 0) resolve(allEntries);
-                else {
-                    allEntries.push(...batch);
-                    readEntries();
-                }
-            }, () => resolve(allEntries));
-        };
-        readEntries();
+      const allEntries = [];
+      const readEntries = () => {
+        dirReader.readEntries((batch) => {
+          if (batch.length === 0) resolve(allEntries);
+          else {
+            allEntries.push(...batch);
+            readEntries();
+          }
+        }, () => resolve(allEntries));
+      };
+      readEntries();
     });
-    
+
     for (const entry of entries) {
-        const fullPath = `${path}/${entry.name}`;
-        if (entry.isDirectory) {
-            await readDirectory(entry, zip, fullPath);
-        } else {
-            const file = await new Promise((resolve) => entry.file(resolve, () => resolve(null)));
-            if (file) {
-                const internalPath = fullPath.substring(fullPath.indexOf('/') + 1);
-                zip.file(internalPath, file);
-            }
+      const fullPath = `${path}/${entry.name}`;
+      if (entry.isDirectory) {
+        await readDirectory(entry, zip, fullPath);
+      } else {
+        const file = await new Promise((resolve) => entry.file(resolve, () => resolve(null)));
+        if (file) {
+          const internalPath = fullPath.substring(fullPath.indexOf('/') + 1);
+          zip.file(internalPath, file);
         }
+      }
     }
   };
 
   const handleDrop = async (e) => {
     e.preventDefault(); e.stopPropagation(); setIsDragOver(false);
-    
+
     // We intentionally check e.dataTransfer.items instead of .files so we can intercept directories
     if (!e.dataTransfer || !e.dataTransfer.items) return;
 
     addLog('Scanning dropped items...');
-    
+
     const items = Array.from(e.dataTransfer.items);
     const resolvedFiles = [];
-    
+
     for (const item of items) {
       if (item.kind !== 'file') continue;
-      
+
       const entry = item.webkitGetAsEntry();
       if (!entry) {
-         resolvedFiles.push(item.getAsFile());
-         continue;
+        resolvedFiles.push(item.getAsFile());
+        continue;
       }
-      
+
       if (entry.isFile) {
-         resolvedFiles.push(item.getAsFile());
+        resolvedFiles.push(item.getAsFile());
       } else if (entry.isDirectory) {
-         addLog(`Zipping folder: ${entry.name}/ ...`);
-         const zip = new JSZip();
-         await readDirectory(entry, zip, entry.name);
-         
-         // Using 'STORE' bypasses CPU compression algorithms to make zipping virtually instant (max speed prioritization)
-         const blob = await zip.generateAsync({ 
-             type: 'blob', 
-             compression: 'STORE' 
-         });
-         
-         // Cast the Blob into a pristine File object so the underlying ChunkManager engine treats it like a native drop
-         const zipFile = new File([blob], `${entry.name}.zip`, { type: 'application/zip' });
-         resolvedFiles.push(zipFile);
+        addLog(`Zipping folder: ${entry.name}/ ...`);
+        const zip = new JSZip();
+        await readDirectory(entry, zip, entry.name);
+
+        // Using 'STORE' bypasses CPU compression algorithms to make zipping virtually instant (max speed prioritization)
+        const blob = await zip.generateAsync({
+          type: 'blob',
+          compression: 'STORE'
+        });
+
+        // Cast the Blob into a pristine File object so the underlying ChunkManager engine treats it like a native drop
+        const zipFile = new File([blob], `${entry.name}.zip`, { type: 'application/zip' });
+        resolvedFiles.push(zipFile);
       }
     }
-    
+
     if (resolvedFiles.length > 0) processFiles(resolvedFiles);
   };
 
   const handleFileInput = (e) => {
     if (!e.target.files) return;
     processFiles(Array.from(e.target.files));
-    e.target.value = null; 
+    e.target.value = null;
   };
 
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
@@ -529,8 +529,8 @@ const Room = ({ roomId, onLeave }) => {
                 )}
               </div>
               <span className="text-gray-300 text-sm font-medium">
-                {connectionStatus === 'connecting' 
-                  ? 'Connecting to server...' 
+                {connectionStatus === 'connecting'
+                  ? 'Connecting to server...'
                   : (activePeers.filter(p => p.status === 'connected').length > 0 ? 'Active' : 'Waiting for peers...')}
               </span>
             </div>
@@ -553,14 +553,14 @@ const Room = ({ roomId, onLeave }) => {
             <div className="border-t border-white/5 pt-6 mt-6">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-white font-medium text-sm">Send to Peers:</h4>
-                <button 
+                <button
                   onClick={() => setSelectedPeers(new Set(activePeers.map(p => p.id)))}
                   className="text-xs text-[#FF5C00] hover:text-[#FF8C42] transition-colors bg-[#FF5C00]/10 px-2 py-1 rounded"
                 >
                   Select All
                 </button>
               </div>
-              
+
               <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
                 {activePeers.map(p => (
                   <label key={p.id} className="flex items-center gap-3 cursor-pointer group p-2 rounded hover:bg-white/5 transition-colors">
@@ -585,7 +585,7 @@ const Room = ({ roomId, onLeave }) => {
                       </div>
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <span className="text-gray-300 text-sm font-mono truncate max-w-[150px]" title={p.id}>{p.id.substring(0,8)}...</span>
+                      <span className="text-gray-300 text-sm font-mono truncate max-w-[150px]" title={p.id}>{p.id.substring(0, 8)}...</span>
                       {p.latency && <span className="text-[#FF5C00] text-[10px]">{p.latency}ms</span>}
                     </div>
                     <span className={`text-xs ml-auto font-medium ${p.status === 'connected' ? 'text-green-500' : 'text-yellow-500'}`}>

@@ -247,7 +247,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
             </motion.div>
 
             {/* Main Title */}
-            <h1 className="text-6xl md:text-8xl font-black mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
+            <h1 className="text-8xl font-black mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
               <span style={{ color: isDark ? '#ffffff' : '#000000' }}>Air</span><span className="text-[#FF5C00]">Share</span>
             </h1>
             <div className="h-1 bg-gradient-to-r from-[#FF5C00] via-[#FF8C42] to-transparent mt-4" />

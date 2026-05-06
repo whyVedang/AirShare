@@ -1,7 +1,9 @@
 import React, { useEffect, useRef } from 'react';
+import { useTheme } from '../context/ThemeContext';
 
 const BackgroundEngine = () => {
   const canvasRef = useRef(null);
+  const { isDark } = useTheme();
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -30,7 +32,7 @@ const BackgroundEngine = () => {
 
       update() {
         this.y += this.vy;
-        
+
         if (this.y > canvas.height) {
           this.y = -10;
           this.x = Math.random() * canvas.width;
@@ -40,7 +42,7 @@ const BackgroundEngine = () => {
         const dx = this.x - mouse.x;
         const dy = this.y - mouse.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        
+
         if (dist < 150) {
           const force = (150 - dist) / 150;
           const angle = Math.atan2(dy, dx);
@@ -67,16 +69,16 @@ const BackgroundEngine = () => {
     };
 
     const drawGrid = () => {
-      ctx.strokeStyle = 'rgba(255, 92, 0, 0.08)';
+      ctx.strokeStyle = isDark ? 'rgba(255, 92, 0, 0.08)' : 'rgba(255, 92, 0, 0.12)';
       ctx.lineWidth = 1;
-      
+
       for (let x = 0; x < canvas.width; x += 100) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
-      
+
       for (let y = 0; y < canvas.height; y += 100) {
         ctx.beginPath();
         ctx.moveTo(0, y);
@@ -86,16 +88,17 @@ const BackgroundEngine = () => {
     };
 
     const animate = () => {
-      ctx.fillStyle = '#0a0a0a';
+      const bgColor = isDark ? '#0a0a0a' : '#FAF7F2';
+      ctx.fillStyle = bgColor;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
+
       drawGrid();
-      
+
       particles.forEach(p => {
         p.update();
         p.draw();
       });
-      
+
       animationId = requestAnimationFrame(animate);
     };
 
@@ -122,7 +125,7 @@ const BackgroundEngine = () => {
       window.removeEventListener('mousemove', handleMouseMove);
       if (animationId) cancelAnimationFrame(animationId);
     };
-  }, []);
+  }, [isDark]);
 
   return (
     <canvas
