@@ -60,8 +60,7 @@ class TransferController {
 
                 switch (result.type) {
                     case 'meta':
-                        console.log(`[Transfer] Expecting: ${result.value.name}`);
-                        break;
+break;
 
                     case 'progress':
                         this.onProgress(result.value);

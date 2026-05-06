@@ -38,8 +38,7 @@ class SignalingClient {
       this.socket.onopen = () => {
         this.isConnected = true;
         this._reconnectAttempts = 0;
-        console.log('[WS] Connected:', this.peerId);
-        resolve();
+resolve();
       };
 
       this.socket.onerror = (error) => {
@@ -52,8 +51,7 @@ class SignalingClient {
       };
 
       this.socket.onclose = () => {
-        console.log('[WS] Disconnected');
-        this.isConnected = false;
+this.isConnected = false;
         this.socket = null;
 
         // Only auto-reconnect if this was NOT caused by us calling disconnect()
@@ -79,7 +77,7 @@ class SignalingClient {
     const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 16000);
     this._reconnectAttempts++;
 
-    console.log(`[WS] Reconnecting in ${delay}ms... (attempt ${this._reconnectAttempts})`);
+
     this._triggerHandler('onReconnecting', { attempt: this._reconnectAttempts, delay });
 
     this._reconnectTimer = setTimeout(async () => {
@@ -88,8 +86,7 @@ class SignalingClient {
 
         // After reconnecting, automatically re-join the room we were in
         if (this.roomId) {
-          console.log('[WS] Re-joining room after reconnect:', this.roomId);
-          this.joinRoom(this.roomId);
+this.joinRoom(this.roomId);
         }
 
         this._triggerHandler('onReconnected', { peerId: this.peerId });
