@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import BackgroundEngine from './components/BackgroundEngine';
+import ThemeToggle from './components/ThemeToggle';
 import Home from './pages/Home';
 import Room from './pages/Room';
 import About from './pages/About';
-import Developers from './pages/Developers';
+import { ThemeProvider, useTheme } from './context/ThemeContext';
 
 const pageVariants = {
   initial: { opacity: 0, y: 16 },
@@ -18,8 +19,9 @@ const pageTransition = {
   ease: 'easeInOut'
 };
 
-function App() {
-  const [currentPage, setCurrentPage] = useState('home'); // 'home', 'room', 'about', 'developers'
+function AppContent() {
+  const { isDark } = useTheme();
+  const [currentPage, setCurrentPage] = useState('home');
   const [roomId, setRoomId] = useState('');
 
   const navigateToRoom = (id) => {
@@ -36,15 +38,14 @@ function App() {
     setCurrentPage('about');
   };
 
-  const navigateToDevelopers = () => {
-    setCurrentPage('developers');
-  };
+  const backgroundColor = isDark ? '#0a0a0a' : '#FAF7F2';
 
   return (
-    <div className="min-h-screen" style={{ background: '#0a0a0a', position: 'relative' }}>
+    <div className="w-screen h-screen overflow-hidden" style={{ background: backgroundColor, position: 'relative', transition: 'background-color 0.3s ease' }}>
       <BackgroundEngine />
+      <ThemeToggle />
 
-      <div style={{ position: 'relative', zIndex: 10 }}>
+      <div style={{ position: 'relative', zIndex: 10, width: '100%', height: '100%', overflowY: 'auto', overflowX: 'hidden' }}>
         <AnimatePresence mode="wait">
           {currentPage === 'home' && (
             <motion.div
@@ -58,7 +59,6 @@ function App() {
               <Home
                 onJoinRoom={navigateToRoom}
                 onNavigateToAbout={navigateToAbout}
-                onNavigateToDevelopers={navigateToDevelopers}
               />
             </motion.div>
           )}
@@ -88,22 +88,17 @@ function App() {
               <About onBack={navigateToHome} />
             </motion.div>
           )}
-
-          {currentPage === 'developers' && (
-            <motion.div
-              key="developers"
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              transition={pageTransition}
-            >
-              <Developers onBack={navigateToHome} />
-            </motion.div>
-          )}
         </AnimatePresence>
       </div>
     </div>
+  );
+}
+
+function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
   );
 }
 
