@@ -96,6 +96,11 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     client.on('onPeerJoined', async (peerID) => {
+      if (peersRef.current.has(peerID)) {
+        addLog(`Peer rejoined (WebRTC self-healing active): ${peerID}`);
+        return;
+      }
+
       addLog(`Peer joined: ${peerID}`);
 
       setActivePeers(prev => [...prev, { id: peerID, status: 'connecting', latency: null }]);
@@ -118,6 +123,19 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     client.on('onOffer', async ({ sdp, from }) => {
+      if (peersRef.current.has(from)) {
+        addLog(`Received renegotiation offer from ${from}`);
+        const peer = peersRef.current.get(from);
+        try {
+          await peer.setRemoteDescription(sdp);
+          const answer = await peer.createAnswer();
+          client.sendAnswer(from, answer);
+        } catch (err) {
+          console.error("Failed to handle renegotiation offer:", err);
+        }
+        return;
+      }
+
       addLog(`Received offer from ${from}`);
 
       setActivePeers(prev => {
@@ -408,38 +426,38 @@ const Room = ({ roomId, onLeave }) => {
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen p-8 font-['Inter',sans-serif]">
       {/* Header */}
-      <motion.div variants={itemVariants} className="mb-12 flex items-center justify-between">
-        <div>
-          <h1 className="text-6xl font-bold text-white mb-2 tracking-tight">
-            Transfer <span className="text-[#FF5C00]">Room</span>
-          </h1>
-          <div className="flex items-center gap-3">
-            <p className="text-gray-500 text-sm">
-              Code: <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>
-            </p>
-            <button
-              onClick={copyToClipboard}
-              className="p-1.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition-colors relative"
-              title="Copy Room Code"
-            >
-              {copied && (
-                <span className="text-green-500 text-xs font-bold absolute -top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap bg-black/80 px-2 py-1 rounded">Copied!</span>
-              )}
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-            </button>
-          </div>
+      <motion.div variants={itemVariants} className="mb-12">
+        <h1 className="text-4xl md:text-6xl font-bold text-white mb-3 tracking-tight">
+          Transfer <span className="text-[#FF5C00]">Room</span>
+        </h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-gray-500 text-sm">
+            Code: <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>
+          </p>
+          <button
+            onClick={copyToClipboard}
+            className="p-1.5 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white rounded-md transition-colors relative"
+            title="Copy Room Code"
+          >
+            {copied && (
+              <span className="text-green-500 text-xs font-bold absolute -top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap bg-black/80 px-2 py-1 rounded">Copied!</span>
+            )}
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          </button>
+          
+          {/* Disconnect Button Inline */}
+          <motion.button
+            onClick={onLeave}
+            className="px-4 py-1.5 ml-1 bg-gradient-to-r from-[#FF5C00] to-[#FF7A33] text-white text-sm font-semibold tracking-wide rounded-md"
+            style={{ boxShadow: '0 2px 8px rgba(255, 92, 0, 0.3)' }}
+            whileHover={{ scale: 1.05, boxShadow: '0 4px 12px rgba(255, 92, 0, 0.4)' }}
+            whileTap={{ scale: 0.98 }}
+          >
+            Disconnect
+          </motion.button>
         </div>
-        <motion.button
-          onClick={onLeave}
-          className="px-6 py-3 bg-gradient-to-r from-[#FF5C00] to-[#FF7A33] text-white font-semibold tracking-wide rounded-lg"
-          style={{ boxShadow: '0 4px 16px rgba(255, 92, 0, 0.3)' }}
-          whileHover={{ scale: 1.05, boxShadow: '0 6px 24px rgba(255, 92, 0, 0.4)' }}
-          whileTap={{ scale: 0.98 }}
-        >
-          Disconnect
-        </motion.button>
       </motion.div>
 
       {/* Main Content Grid */}

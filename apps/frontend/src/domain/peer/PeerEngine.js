@@ -65,9 +65,7 @@ class PeerEngine {
 
     this.peerConnection = new RTCPeerConnection(rtcConfig);
     
-    console.log('[PeerEngine] RTCPeerConnection initialized with STUN servers');
-    
-    this._setupPeerConnectionListeners();
+this._setupPeerConnectionListeners();
   }
 
   /**
@@ -78,9 +76,7 @@ class PeerEngine {
     // Connection state monitoring
     this.peerConnection.onconnectionstatechange = () => {
       this.connectionState = this.peerConnection.connectionState;
-      console.log('[PeerEngine] Connection state:', this.connectionState);
-      
-      this._triggerCallback('onConnectionStateChange', {
+this._triggerCallback('onConnectionStateChange', {
         state: this.connectionState
       });
 
@@ -93,32 +89,27 @@ class PeerEngine {
     // ICE connection state
     this.peerConnection.oniceconnectionstatechange = () => {
       this.iceConnectionState = this.peerConnection.iceConnectionState;
-      console.log('[PeerEngine] ICE connection state:', this.iceConnectionState);
-    };
+};
 
     // ICE candidate gathering
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log('[PeerEngine] New ICE candidate:', event.candidate.type);
-        this._triggerCallback('onIceCandidate', event.candidate);
+this._triggerCallback('onIceCandidate', event.candidate);
       } else {
-        console.log('[PeerEngine] ICE gathering complete');
-        this._triggerCallback('onIceGatheringComplete');
+this._triggerCallback('onIceGatheringComplete');
       }
     };
 
     // Handle incoming data channels (receiver side)
     this.peerConnection.ondatachannel = (event) => {
-      console.log('[PeerEngine] Received remote data channel:', event.channel.label);
-      this.remoteDataChannel = event.channel;
+this.remoteDataChannel = event.channel;
       this._setupDataChannelListeners(this.remoteDataChannel);
       this._triggerCallback('onRemoteDataChannel', event.channel);
     };
 
     // ICE gathering state
     this.peerConnection.onicegatheringstatechange = () => {
-      console.log('[PeerEngine] ICE gathering state:', this.peerConnection.iceGatheringState);
-    };
+};
   }
 
   /**
@@ -143,9 +134,7 @@ class PeerEngine {
       this.config.dataChannelOptions
     );
 
-    console.log('[PeerEngine] Created data channel:', label);
-    
-    this._setupDataChannelListeners(this.dataChannel);
+this._setupDataChannelListeners(this.dataChannel);
     
     return this.dataChannel;
   }
@@ -157,10 +146,8 @@ class PeerEngine {
    */
   _setupDataChannelListeners(channel) {
     channel.onopen = () => {
-      console.log(`[PeerEngine] Data channel opened: ${channel.label}`);
-      console.log(`[PeerEngine] Protocol: ${channel.protocol || 'SCTP'}`);
-      console.log(`[PeerEngine] Ordered: ${channel.ordered}`);
-      console.log(`[PeerEngine] Max retransmits: ${channel.maxRetransmits}`);
+console.log(`[PeerEngine] Protocol: ${channel.protocol || 'SCTP'}`);
+console.log(`[PeerEngine] Max retransmits: ${channel.maxRetransmits}`);
       
       this._triggerCallback('onDataChannelOpen', {
         label: channel.label,
@@ -169,8 +156,7 @@ class PeerEngine {
     };
 
     channel.onclose = () => {
-      console.log(`[PeerEngine] Data channel closed: ${channel.label}`);
-      this._triggerCallback('onDataChannelClose', {
+this._triggerCallback('onDataChannelClose', {
         label: channel.label
       });
     };
@@ -191,8 +177,7 @@ class PeerEngine {
     };
 
     channel.onbufferedamountlow = () => {
-      console.log('[PeerEngine] Buffer amount low - ready for more data');
-    };
+};
   }
 
   /**
@@ -212,9 +197,7 @@ class PeerEngine {
 
       await this.peerConnection.setLocalDescription(offer);
       
-      console.log('[PeerEngine] Created and set local offer');
-      
-      return offer;
+return offer;
     } catch (error) {
       console.error('[PeerEngine] Failed to create offer:', error);
       throw error;
@@ -234,9 +217,7 @@ class PeerEngine {
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
       
-      console.log('[PeerEngine] Created and set local answer');
-      
-      return answer;
+return answer;
     } catch (error) {
       console.error('[PeerEngine] Failed to create answer:', error);
       throw error;
@@ -257,8 +238,7 @@ class PeerEngine {
         new RTCSessionDescription(description)
       );
       
-      console.log('[PeerEngine] Set remote description:', description.type);
-    } catch (error) {
+} catch (error) {
       console.error('[PeerEngine] Failed to set remote description:', error);
       throw error;
     }
@@ -278,8 +258,7 @@ class PeerEngine {
         new RTCIceCandidate(candidate)
       );
       
-      console.log('[PeerEngine] Added ICE candidate');
-    } catch (error) {
+} catch (error) {
       console.error('[PeerEngine] Failed to add ICE candidate:', error);
       throw error;
     }
@@ -397,9 +376,7 @@ class PeerEngine {
    * Closes the peer connection and cleans up resources
    */
   close() {
-    console.log('[PeerEngine] Closing peer connection');
-
-    if (this.dataChannel) {
+if (this.dataChannel) {
       this.dataChannel.close();
       this.dataChannel = null;
     }

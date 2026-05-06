@@ -40,7 +40,7 @@ services:
         - VITE_STUN_URL=stun:YOUR_SERVER_IP:3478
         - VITE_TURN_URL=turn:YOUR_SERVER_IP:3478
         - VITE_TURN_USERNAME=airshare
-        - VITE_TURN_CREDENTIAL=0GbsnjJ68_sJ8CQtBKAJDJqCPeAzxjRehLmo4E5LTrc
+        - VITE_TURN_CREDENTIAL=${VITE_TURN_CREDENTIAL}
     ports:
       - "80:80"
     depends_on:
