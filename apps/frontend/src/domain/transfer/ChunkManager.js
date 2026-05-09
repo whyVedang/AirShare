@@ -1,21 +1,34 @@
+import StorageManager from "./StorageManager";
+import { calculateFileHash } from "./utils/hash";
+import { markChunk, hasChunk, isBitmapComplete, getMissingChunks } from "./utils/BitMap";
+import { createChunkPacket, parseChunkPacket } from "./utils/Packet";
+
 class ChunkManager {
   constructor() {
+    this.storage = StorageManager;
     this.receivedChunks = new Map();
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
+    this.expectedHash = null;
+    this.chunkSize = 64 * 1024;
   }
 
   async sendFile(file, channel, congestionController, latencyController, onProgress) {
     const maxBuffer = 256 * 1024;
     channel.bufferedAmountLowThreshold = maxBuffer / 2;
 
-    // 1. Send Metadata
+    // 1. Send Metadata 
+    const fileId = crypto.randomUUID();
+    const originalHash = await calculateFileHash(file);
+
     channel.send(JSON.stringify({
-      type: "file-meta",
+      type: "meta",
       metadata: {
+        fileId,
         name: file.name,
         size: file.size,
+        hash: originalHash,
         type: file.type || 'application/octet-stream'
       }
     }));
@@ -27,7 +40,7 @@ class ChunkManager {
       // Congestion Control
       const avgRTT = latencyController.getAverageRTT();
       congestionController.update(avgRTT, channel.bufferedAmount);
-      const chunkSize = congestionController.getChunkSize();
+      this.chunkSize = congestionController.getChunkSize();
 
       // Backpressure
       if (channel.bufferedAmount >= maxBuffer) {
@@ -35,21 +48,17 @@ class ChunkManager {
       }
 
       // Slice & Prepare Binary Packet
-      const blob = file.slice(offset, offset + chunkSize);
+      const blob = file.slice(offset, offset + this.chunkSize);
       const arrayBuffer = await blob.arrayBuffer();
-
-      const packet = new Uint8Array(4 + arrayBuffer.byteLength);
-      const view = new DataView(packet.buffer);
-      view.setUint32(0, chunkIndex); // Write index at start
-      packet.set(new Uint8Array(arrayBuffer), 4); // Write data after index
+      const packet = createChunkPacket(chunkIndex, arrayBuffer);
 
       channel.send(packet);
 
-      offset += chunkSize;
+      offset += this.chunkSize;
       chunkIndex++;
 
       if (onProgress) {
-        onProgress(Math.min(100, Math.round((offset / file.size) * 100)));
+        onProgress(Math.round((offset / file.size) * 100));
       }
     }
 
@@ -57,7 +66,7 @@ class ChunkManager {
     channel.send(JSON.stringify({ type: "file-end", totalChunks: chunkIndex }));
   }
 
-  async waitForBufferLow(channel) {
+  waitForBufferLow(channel) {
     return new Promise(resolve => {
       const handler = () => {
         channel.removeEventListener("bufferedamountlow", handler);
@@ -67,40 +76,75 @@ class ChunkManager {
     });
   }
 
-  handleIncomingData(data) {
-    if (data instanceof ArrayBuffer) {
-      // Extract Index from the first 4 bytes
-      const view = new DataView(data);
-      const index = view.getUint32(0);
-      const chunkData = data.slice(4); // Actual file content
+  async handleIncomingData(data, channel) {
+    if (data instanceof Blob) {
+      data = await data.arrayBuffer();
+    }
 
-      this.receivedChunks.set(index, chunkData);
+    if (data instanceof ArrayBuffer) {
+      const { chunkIndex, chunkData } = parseChunkPacket(data);
+      const bitmap = await this.storage.getBitmap(this.fileId, this.totalChunks);
+
+      if (hasChunk(bitmap, chunkIndex)) return;
+
+      await this.storage.writeChunk(this.fileId, chunkIndex, this.chunkSize, chunkData);
+      markChunk(bitmap, chunkIndex);
+      await this.storage.saveBitmap(this.fileId, bitmap);
+
       this.receivedBytes += chunkData.byteLength;
       return { type: 'progress', value: this.getReceiverProgress() };
-    } 
-    
-    const msg = JSON.parse(data);
-    if (msg.type === "file-meta") {
-      this.fileMetadata = msg.metadata;
-      return { type: 'meta', value: msg.metadata };
     }
-    if (msg.type === "file-end") {
-      this.totalChunks = msg.totalChunks;
-      const filename = this.fileMetadata?.name;
-      return { type: 'complete', value: this.assembleChunks(), filename };
-    }
-  }
 
-  assembleChunks() {
-    const ordered = [];
-    for (let i = 0; i < this.totalChunks; i++) {
-      const chunk = this.receivedChunks.get(i);
-      if (!chunk) throw new Error(`Missing chunk ${i}`);
-      ordered.push(chunk);
+    const msg = JSON.parse(data);
+
+    if (msg.type === "meta") {
+      this.fileMetadata = msg.metadata;
+      this.expectedHash = msg.metadata.hash;
+      this.fileId = msg.metadata.fileId;
+      this.totalChunks = Math.ceil(msg.metadata.size / this.chunkSize);
+
+      await this.storage.saveMetadata(this.fileId, this.fileMetadata);
+      return { type: 'meta', value: this.fileMetadata };
     }
-    const blob = new Blob(ordered, { type: this.fileMetadata.type });
-    this.reset();
-    return blob;
+
+    if (msg.type === "file-end") {
+      const bitmap = await this.storage.getBitmap(this.fileId, this.totalChunks);
+      const complete = isBitmapComplete(bitmap, this.totalChunks);
+
+      if (!complete) {
+        const missing = getMissingChunks(bitmap, this.totalChunks);
+        channel.send(JSON.stringify({ type: "resume-request", missing }));
+        return;
+      }
+
+      await this.storage.finalizeFile(this.fileId);
+      const file = await this.storage.readFile(this.fileId);
+      const receivedHash = await calculateFileHash(file);
+      const verified = receivedHash === this.expectedHash;
+
+      channel.send(JSON.stringify({
+        type: "receipt",
+        status: verified ? "verified" : "corrupted",
+        hash: receivedHash
+      }));
+
+      if (!verified) throw new Error("File corrupted");
+
+      return {
+        type: "complete",
+        value: file,
+        filename: this.fileMetadata.name,
+        verified: true
+      };
+    }
+
+    if (msg.type === "resume-request") {
+      return { type: "resume-request", value: msg.missing };
+    }
+
+    if (msg.type === "receipt") {
+      return { type: "receipt", value: msg };
+    }
   }
 
   getReceiverProgress() {
@@ -109,10 +153,11 @@ class ChunkManager {
   }
 
   reset() {
-    this.receivedChunks.clear();
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
+    this.expectedHash = null;
+    this.chunkSize = 64 * 1024;
   }
 }
 
