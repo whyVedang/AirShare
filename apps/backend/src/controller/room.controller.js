@@ -1,5 +1,5 @@
 import * as Services from "../services/connectionManager.services.js";
-import { v4 as uuidv4 } from "uuid";
+import crypto from "crypto";
 
 export const getStats = (req, res) => {
     res.status(200).json({
@@ -12,7 +12,11 @@ export const getStats = (req, res) => {
 
 export const createRoom = async (req, res, next) => {
     try {
-        const roomID = uuidv4();
+        let roomID;
+        do {
+            roomID = crypto.randomBytes(3).toString("hex").toUpperCase();
+        } while (await Services.getRoom(roomID));
+
         await Services.createRoom(roomID);
 
         res.status(201).json({
@@ -76,7 +80,7 @@ export const roomStatus = async (req, res, next) => {
         res.status(200).json({
             success: true,
             peers: peerCount,
-            mode: peerCount >= 6 ? "SFU" : "P2P"
+            mode: "P2P"
         });
     } catch (err) {
         next(err);

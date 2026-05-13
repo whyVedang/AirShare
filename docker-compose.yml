@@ -36,11 +36,12 @@ services:
       context: ./apps/frontend
       dockerfile: Dockerfile
       args:
+        - VITE_BASE_PATH=/
         - VITE_WS_URL=ws://localhost:5000
-        - VITE_STUN_URL=stun:YOUR_SERVER_IP:3478
-        - VITE_TURN_URL=turn:YOUR_SERVER_IP:3478
-        - VITE_TURN_USERNAME=airshare
-        - VITE_TURN_CREDENTIAL=${VITE_TURN_CREDENTIAL}
+        - VITE_STUN_URL=${VITE_STUN_URL:-stun:stun.l.google.com:19302}
+        - VITE_TURN_URL=${VITE_TURN_URL:-}
+        - VITE_TURN_USERNAME=${VITE_TURN_USERNAME:-}
+        - VITE_TURN_CREDENTIAL=${VITE_TURN_CREDENTIAL:-}
     ports:
       - "80:80"
     depends_on:
