@@ -1,10 +1,18 @@
 import { WebSocketServer } from "ws";
 import * as CM from "../services/connectionManager.services.js";
+import crypto from "crypto";
 
 export const WebSocketINIT = (server) => {
     const wss = new WebSocketServer({ server });
-
+    CM.setupHeartbeat(wss);
     wss.on("connection", (ws) => {
+
+        ws.peerID = crypto.randomUUID();
+
+        ws.send(JSON.stringify({
+            type: "welcome",
+            payload: { peerID: ws.peerID }
+        }));
         ws.on("message", async (raw) => {
             try {
                 const data = JSON.parse(raw);
@@ -13,45 +21,33 @@ export const WebSocketINIT = (server) => {
                 console.error("Invalid WebSocket message:", err.message);
             }
         });
-
-        ws.on("close", async () => {
-            if (ws.peerID) {
-                await CM.handleDisconnect(ws.peerID);
-            }
-        });
     });
 };
 
 const handleMessage = async (ws, data) => {
     const { type, payload } = data;
+    const JWT_SECRET = process.env.JWT_SECRET;
+    const expiresIn = process.env.expiresIn;
+
 
     switch (type) {
         case "join-room":
-            await CM.createRoom(payload.roomID);
-            await CM.joinRoom(payload.roomID, payload.peerID, ws);
+            const validation = await CM.validateRoom(payload.roomID);
+            if (!validation.valid) {
+                ws.send(JSON.stringify({ type: "error", message: validation.error }));
+                return;
+            }
+            await CM.joinRoom(payload.roomID, ws.peerID, ws);
             break;
 
         case "offer":
-            await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
-                type: "offer",
-                payload: { sdp: payload.sdp }
-            });
-            break;
-
         case "answer":
-            await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
-                type: "answer",
-                payload: { sdp: payload.sdp }
-            });
-            break;
-
         case "ice-candidate":
             await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
-                type: "ice-candidate",
-                payload: { candidate: payload.candidate }
+                type: type,
+                payload: payload
             });
             break;
-
         default:
             console.warn("Unknown WebSocket message type:", type);
     }

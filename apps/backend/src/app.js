@@ -10,7 +10,15 @@ const app = express()
 
 app.set("trust proxy", 1)
 
-app.use(cors())
+const corsOptions = {
+    origin: process.env.NODE_ENV === "production" 
+        ? [process.env.FRONTEND_URL]
+        : "*",
+    methods: ["GET", "POST"],
+    credentials: true
+};
+
+app.use(cors(corsOptions));
 
 
 app.use(express.json())

@@ -1,5 +1,6 @@
 import * as Services from "../services/connectionManager.services.js";
-import { v4 as uuidv4 } from "uuid";
+import * as CM from "../services/connectionManager.services.js";
+import crypto from "crypto"
 
 export const getStats = (req, res) => {
     res.status(200).json({
@@ -12,18 +13,20 @@ export const getStats = (req, res) => {
 
 export const createRoom = async (req, res, next) => {
     try {
-        const roomID = uuidv4();
-        await Services.createRoom(roomID);
+        const roomID = crypto.randomBytes(3).toString("hex").toUpperCase();
+        
+        await CM.createRoom(roomID);
 
-        res.status(201).json({
+        // Send the secure ID back to the frontend
+        res.status(201).json({ 
             success: true,
-            roomID
+            roomID: roomID 
         });
-    } catch (err) {
-        next(err);
+    } catch (error) {
+        console.error("Error creating room:", error);
+        res.status(500).json({ success: false, message: "Failed to create room" });
     }
 };
-
 export const joinRoom = async (req, res, next) => {
     try {
         const { roomID } = req.params;
