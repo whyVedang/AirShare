@@ -43,7 +43,6 @@ export const handleHostOffer = (roomID, hostID, sdp, sendToWebSocket) => {
         dc.onMessage((msg) => {
             for (const [receiverID, receiver] of room.receivers.entries()) {
                 if (receiver.dataChannel && receiver.dataChannel.isOpen()) {
-                    
                     receiver.dataChannel.sendMessageBinary(msg);
                 }
             }
@@ -62,7 +61,6 @@ export const handleReceiverJoin = (roomID, receiverID, sendToWebSocket) => {
     });
 
     const dc = pc.createDataChannel("file-transfer");
-    
     room.receivers.set(receiverID, { connection: pc, dataChannel: dc });
 
     pc.onLocalDescription((localSdp, type) => {
@@ -86,7 +84,11 @@ export const handleClientAnswer = (roomID, peerID, sdp) => {
     
     const receiver = room.receivers.get(peerID);
     if (receiver && receiver.connection) {
-        receiver.connection.setRemoteDescription(sdp, "answer");
+        try {
+            receiver.connection.setRemoteDescription(sdp, "answer");
+        } catch (e) {
+            console.error(`[SFU] Failed to set remote answer for ${peerID}:`, e);
+        }
     }
 };
 
@@ -94,11 +96,35 @@ export const addClientIceCandidate = (roomID, peerID, candidate) => {
     const room = activeRooms.get(roomID);
     if (!room) return;
 
-    if (room.hostID === peerID && room.hostConnection) {
-        // Warning: node-datachannel ICE addition depends on specific format, ensure string mapping
-        room.hostConnection.addRemoteCandidate(candidate.candidate, candidate.sdpMid);
+    try {
+        if (room.hostID === peerID && room.hostConnection) {
+            room.hostConnection.addRemoteCandidate(candidate.candidate, candidate.sdpMid);
+        } else if (room.receivers.has(peerID)) {
+            const receiver = room.receivers.get(peerID);
+            receiver.connection.addRemoteCandidate(candidate.candidate, candidate.sdpMid);
+        }
+    } catch (e) {
+        console.warn(`[SFU] Ignored invalid ICE candidate from ${peerID}`);
+    }
+};
+
+export const removePeer = (roomID, peerID) => {
+    const room = activeRooms.get(roomID);
+    if (!room) return;
+
+    if (room.hostID === peerID) {
+        // Host left -> Tear down the entire SFU room for this file transfer
+        if (room.hostConnection) room.hostConnection.close();
+        for (const [rid, receiver] of room.receivers.entries()) {
+            if (receiver.connection) receiver.connection.close();
+        }
+        activeRooms.delete(roomID);
+        console.log(`[SFU] Room ${roomID} destroyed because host left.`);
     } else if (room.receivers.has(peerID)) {
+        // A single downloader left -> Just remove their connection
         const receiver = room.receivers.get(peerID);
-        receiver.connection.addRemoteCandidate(candidate.candidate, candidate.sdpMid);
+        if (receiver.connection) receiver.connection.close();
+        room.receivers.delete(peerID);
+        console.log(`[SFU] Receiver ${peerID} left room ${roomID}.`);
     }
 };

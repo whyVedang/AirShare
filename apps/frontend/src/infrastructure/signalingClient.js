@@ -175,7 +175,6 @@ class SignalingClient {
   }
 
   disconnect() {
-    // Flag as intentional so onclose does NOT trigger auto-reconnect
     this._intentionalDisconnect = true;
 
     if (this._reconnectTimer) {
@@ -189,20 +188,31 @@ class SignalingClient {
       this.isConnected = false;
     }
   }
-  sendHostOffer(roomID, sdp) {
-    this.send({ type: 'host-offer', payload: { roomID, sdp } });
+
+  // --- MESH & SFU SIGNALING METHODS ---
+
+  sendOffer(targetPeerID, offer) {
+    this._send('offer', { roomID: this.roomId, targetPeerID, sdp: offer });
   }
 
-  sendReceiverRequest(roomID) {
-    this.send({ type: 'receiver-request', payload: { roomID } });
-  }
-
-  sendReceiverAnswer(roomID, sdp) {
-    this.send({ type: 'receiver-answer', payload: { roomID, sdp } });
+  sendAnswer(targetPeerID, answer) {
+    this._send('answer', { roomID: this.roomId, targetPeerID, sdp: answer });
   }
 
   sendIceCandidate(roomID, targetPeerID, candidate) {
-    this.send({ type: 'ice-candidate', payload: { roomID, candidate } });
+    this._send('ice-candidate', { roomID, targetPeerID, candidate });
+  }
+
+  sendHostOffer(roomID, sdp) {
+    this._send('host-offer', { roomID, sdp });
+  }
+
+  sendReceiverRequest(roomID) {
+    this._send('receiver-request', { roomID });
+  }
+
+  sendReceiverAnswer(roomID, sdp) {
+    this._send('receiver-answer', { roomID, sdp });
   }
 }
 
