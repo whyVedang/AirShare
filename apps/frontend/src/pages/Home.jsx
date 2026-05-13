@@ -1,20 +1,33 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useTheme } from '../context/ThemeContext';
 
-const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
+const Home = ({ onJoinRoom, onNavigateToAbout }) => {
+  const { isDark } = useTheme();
   const [roomId, setRoomId] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
 
   const handleCreateRoom = async () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     try {
-      await navigator.clipboard.writeText(newRoomId);
-    } catch (err) {
-      console.error('Failed to copy code to clipboard:', err);
+      // Ask the backend for a secure Room ID
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/rooms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+
+      if (!response.ok) throw new Error("Failed to create room");
+
+      const data = await response.json();
+
+      navigate(`/room/${data.roomID}`);
+    } catch (error) {
+      console.error("Error creating room:", error);
+      alert("Could not create room. Please try again.");
     }
-    
+
     setIsGenerating(true);
-    
+
     if (onJoinRoom) {
       setTimeout(() => {
         onJoinRoom(newRoomId);
@@ -66,7 +79,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
         className="min-h-screen flex flex-col items-center justify-center p-6"
       >
         {/* Logo with P2P Illustration */}
-        <motion.div variants={itemVariants} className="text-center mb-20 relative">
+        <motion.div variants={itemVariants} className="text-center mb-8 md:mb-10 relative">
           {/* P2P Visualization */}
           <div className="relative inline-block">
             {/* Left Device Node */}
@@ -234,26 +247,26 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             </motion.div>
 
             {/* Main Title */}
-            <h1 className="text-8xl font-black text-white mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
-              Air<span className="text-[#FF5C00]">Share</span>
+            <h1 className="text-6xl md:text-8xl font-black mb-2 tracking-tighter relative z-10" style={{ lineHeight: 0.85 }}>
+              <span style={{ color: isDark ? '#ffffff' : '#000000' }}>Air</span><span className="text-[#FF5C00]">Share</span>
             </h1>
             <div className="h-1 bg-gradient-to-r from-[#FF5C00] via-[#FF8C42] to-transparent mt-4" />
           </div>
 
-          <p className="text-gray-500 text-lg font-medium mt-12 tracking-wide">
+          <p className="text-gray-500 text-lg font-medium mt-6 md:mt-8 tracking-wide">
             Direct. Encrypted. Unstoppable.
           </p>
-          <p className="text-[#FF5C00]/40 text-xs mt-3 font-mono uppercase tracking-widest">
+          <p className="text-[#FF5C00]/40 text-xs mt-2 font-mono uppercase tracking-widest">
             WebRTC • P2P • Zero-Server
           </p>
         </motion.div>
 
         {/* Cards Grid */}
-        <div className="w-full max-w-6xl grid md:grid-cols-2 gap-8">
+        <div className="w-full max-w-6xl grid md:grid-cols-2 gap-6">
           {/* Create Room Card */}
           <motion.div
             variants={itemVariants}
-            className="relative backdrop-blur-2xl rounded-lg p-10 border border-white/5 overflow-hidden"
+            className="relative backdrop-blur-2xl rounded-lg p-6 md:p-8 border border-white/5 overflow-hidden"
             style={{
               background: 'linear-gradient(135deg, rgba(26, 26, 26, 0.8) 0%, rgba(15, 15, 15, 0.9) 100%)',
               boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)'
@@ -262,13 +275,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             {/* Subtle gradient overlay */}
             <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-[#FF5C00]/10 to-transparent" />
 
-            <div className="flex items-center gap-3 mb-8">
+            <div className="flex items-center gap-3 mb-6">
               <div className="w-1 h-8 bg-gradient-to-b from-[#FF5C00] to-[#FF8C42]" />
               <h2 className="text-3xl font-bold text-white tracking-tight">
                 Create Room
               </h2>
             </div>
-            <p className="text-gray-500 mb-8 text-sm leading-relaxed">
+            <p className="text-gray-500 mb-6 text-sm leading-relaxed">
               Start a new transfer session and share your unique room code
             </p>
 
@@ -294,7 +307,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
           {/* Join Room Card */}
           <motion.div
             variants={itemVariants}
-            className="relative backdrop-blur-2xl rounded-lg p-10 border border-white/5 overflow-hidden"
+            className="relative backdrop-blur-2xl rounded-lg p-6 md:p-8 border border-white/5 overflow-hidden"
             style={{
               background: 'linear-gradient(135deg, rgba(26, 26, 26, 0.8) 0%, rgba(15, 15, 15, 0.9) 100%)',
               boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)'
@@ -303,13 +316,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             {/* Subtle gradient overlay */}
             <div className="absolute top-0 left-0 w-32 h-32 bg-gradient-to-br from-[#FF5C00]/10 to-transparent" />
 
-            <div className="flex items-center gap-3 mb-8">
+            <div className="flex items-center gap-3 mb-6">
               <div className="w-1 h-8 bg-gradient-to-b from-[#FF8C42] to-[#FF5C00]" />
               <h2 className="text-3xl font-bold text-white tracking-tight">
                 Join Room
               </h2>
             </div>
-            <p className="text-gray-500 mb-8 text-sm leading-relaxed">
+            <p className="text-gray-500 mb-6 text-sm leading-relaxed">
               Enter a room code to connect and start transferring
             </p>
 
@@ -354,7 +367,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
         {/* Footer Navigation */}
         <motion.div
           variants={itemVariants}
-          className="mt-24 flex gap-6"
+          className="mt-8 flex gap-6"
         >
           <motion.button
             onClick={() => onNavigateToAbout?.()}
@@ -362,13 +375,6 @@ const Home = ({ onJoinRoom, onNavigateToAbout, onNavigateToDevelopers }) => {
             whileHover={{ y: -2 }}
           >
             About
-          </motion.button>
-          <motion.button
-            onClick={() => onNavigateToDevelopers?.()}
-            className="px-6 py-2 text-gray-500 hover:text-[#FF5C00] text-sm font-medium tracking-wide border-b border-transparent hover:border-[#FF5C00]/50 transition-all"
-            whileHover={{ y: -2 }}
-          >
-            Developers
           </motion.button>
         </motion.div>
       </motion.div>
