@@ -29,25 +29,27 @@ const handleMessage = async (ws, data) => {
     const JWT_SECRET = process.env.JWT_SECRET;
     const expiresIn = process.env.expiresIn;
 
-
     switch (type) {
         case "join-room":
-            const validation = await CM.validateRoom(payload.roomID);
-            if (!validation.valid) {
-                ws.send(JSON.stringify({ type: "error", message: validation.error }));
-                return;
-            }
             await CM.joinRoom(payload.roomID, ws.peerID, ws);
             break;
 
-        case "offer":
-        case "answer":
-        case "ice-candidate":
-            await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, {
-                type: type,
-                payload: payload
-            });
+        case "host-offer":
+            SFU.handleHostOffer(payload.roomID, ws.peerID, payload.sdp, wsSend);
             break;
+
+        case "receiver-request":
+            SFU.handleReceiverJoin(payload.roomID, ws.peerID, wsSend);
+            break;
+
+        case "receiver-answer":
+            SFU.handleClientAnswer(payload.roomID, ws.peerID, payload.sdp);
+            break;
+
+        case "ice-candidate":
+            SFU.addClientIceCandidate(payload.roomID, ws.peerID, payload.candidate);
+            break;
+
         default:
             console.warn("Unknown WebSocket message type:", type);
     }

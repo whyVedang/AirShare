@@ -38,7 +38,7 @@ class SignalingClient {
       this.socket.onopen = () => {
         this.isConnected = true;
         this._reconnectAttempts = 0;
-resolve();
+        resolve();
       };
 
       this.socket.onerror = (error) => {
@@ -51,7 +51,7 @@ resolve();
       };
 
       this.socket.onclose = () => {
-this.isConnected = false;
+        this.isConnected = false;
         this.socket = null;
 
         // Only auto-reconnect if this was NOT caused by us calling disconnect()
@@ -86,7 +86,7 @@ this.isConnected = false;
 
         // After reconnecting, automatically re-join the room we were in
         if (this.roomId) {
-this.joinRoom(this.roomId);
+          this.joinRoom(this.roomId);
         }
 
         this._triggerHandler('onReconnected', { peerId: this.peerId });
@@ -162,14 +162,6 @@ this.joinRoom(this.roomId);
     });
   }
 
-  sendIceCandidate(targetPeerID, candidate) {
-    this._send('ice-candidate', {
-      roomID: this.roomId,
-      targetPeerID,
-      candidate
-    });
-  }
-
   on(event, handler) {
     if (this.handlers.hasOwnProperty(event)) {
       this.handlers[event] = handler;
@@ -196,6 +188,21 @@ this.joinRoom(this.roomId);
       this.socket = null;
       this.isConnected = false;
     }
+  }
+  sendHostOffer(roomID, sdp) {
+    this.send({ type: 'host-offer', payload: { roomID, sdp } });
+  }
+
+  sendReceiverRequest(roomID) {
+    this.send({ type: 'receiver-request', payload: { roomID } });
+  }
+
+  sendReceiverAnswer(roomID, sdp) {
+    this.send({ type: 'receiver-answer', payload: { roomID, sdp } });
+  }
+
+  sendIceCandidate(roomID, targetPeerID, candidate) {
+    this.send({ type: 'ice-candidate', payload: { roomID, candidate } });
   }
 }
 
