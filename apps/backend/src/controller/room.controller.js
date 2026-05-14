@@ -19,15 +19,16 @@ export const createRoom = async (req, res, next) => {
 
         await Services.createRoom(roomID);
 
-        res.status(201).json({
+        // Send the secure ID back to the frontend
+        res.status(201).json({ 
             success: true,
-            roomID
+            roomID: roomID 
         });
-    } catch (err) {
-        next(err);
+    } catch (error) {
+        console.error("Error creating room:", error);
+        res.status(500).json({ success: false, message: "Failed to create room" });
     }
 };
-
 export const joinRoom = async (req, res, next) => {
     try {
         const { roomID } = req.params;

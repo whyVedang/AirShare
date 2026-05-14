@@ -4,6 +4,9 @@ import SignalingClient from "../infrastructure/signalingClient";
 import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
 import JSZip from 'jszip';
+import { CryptoService } from "../security/CryptoService.js";
+import { OPFSService } from "../domain/transfer/OPFS.js";
+import ChunkManager from "../domain/transfer/ChunkManager.js";
 
 const MESH_SEND_BATCH_SIZE = 3;
 
@@ -195,12 +198,12 @@ const Room = ({ roomId, onLeave }) => {
       });
     });
   };
-
   const setupPeer = (peer, targetPeerID) => {
     const client = clientRef.current;
 
     peer.on('onIceCandidate', (candidate) => {
-      client.sendIceCandidate(targetPeerID, candidate);
+      // FIX: Added `roomId` as the first argument 
+      client.sendIceCandidate(roomId, targetPeerID, candidate);
     });
 
     peer.on('onConnectionStateChange', ({ state }) => {
@@ -218,6 +221,7 @@ const Room = ({ roomId, onLeave }) => {
 
       const tc = new TransferController(
         peer,
+        null, // No CryptoService attached for standard mesh currently
         (progress) => {
           setFiles(prev => prev.map(f => f.status === 'Sending' ? { ...f, progress } : f));
         },
@@ -434,7 +438,6 @@ const Room = ({ roomId, onLeave }) => {
   const handleDrop = async (e) => {
     e.preventDefault(); e.stopPropagation(); setIsDragOver(false);
 
-    // We intentionally check e.dataTransfer.items instead of .files so we can intercept directories
     if (!e.dataTransfer || !e.dataTransfer.items) return;
 
     addLog('Scanning dropped items...');
@@ -458,13 +461,11 @@ const Room = ({ roomId, onLeave }) => {
         const zip = new JSZip();
         await readDirectory(entry, zip, entry.name);
 
-        // Using 'STORE' bypasses CPU compression algorithms to make zipping virtually instant (max speed prioritization)
         const blob = await zip.generateAsync({
           type: 'blob',
           compression: 'STORE'
         });
 
-        // Cast the Blob into a pristine File object so the underlying ChunkManager engine treats it like a native drop
         const zipFile = new File([blob], `${entry.name}.zip`, { type: 'application/zip' });
         resolvedFiles.push(zipFile);
       }
@@ -481,6 +482,42 @@ const Room = ({ roomId, onLeave }) => {
 
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
   const handleZoneClick = () => { if (fileInputRef.current) fileInputRef.current.click(); };
+
+  // New Init System for SFU mode bridging
+  const initializeTransferServices = async (roomPassword) => {
+    // 1. Initialize Crypto
+    const cryptoService = new CryptoService();
+    await cryptoService.deriveKeyFromPassword(roomPassword || "default-secure-room-key");
+
+    // 2. Initialize OPFS
+    const opfsService = new OPFSService();
+
+    // 3. Setup Sender Controller
+    // Note: peerEngine here would need to be bound or passed from state when adopting the SFU peer
+    const peerEngine = new PeerEngine();
+    const transferController = new TransferController(
+      peerEngine,
+      CryptoService,
+      (progress) => console.log("Upload Progress:", progress)
+    );
+
+    const handleFileUpload = async (file) => {
+      await transferController.sendFile(file);
+    };
+
+    // 4. Setup Receiver Manager
+    const chunkManager = new ChunkManager(
+      cryptoService,
+      opfsService,
+      (fileName) => alert(`Download Complete: ${fileName}`),
+      (progress) => console.log("Download Progress:", progress)
+    );
+
+    // 5. Tell the Peer Engine to route incoming data to the ChunkManager
+    peerEngine.on('data-received', (data) => chunkManager.handleIncomingData(data));
+
+    return { transferController, chunkManager, handleFileUpload };
+  };
 
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen p-8 font-['Inter',sans-serif]">
@@ -505,7 +542,7 @@ const Room = ({ roomId, onLeave }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
             </svg>
           </button>
-          
+
           {/* Disconnect Button Inline */}
           <motion.button
             onClick={onLeave}

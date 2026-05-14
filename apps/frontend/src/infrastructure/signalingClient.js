@@ -38,7 +38,7 @@ class SignalingClient {
       this.socket.onopen = () => {
         this.isConnected = true;
         this._reconnectAttempts = 0;
-resolve();
+        resolve();
       };
 
       this.socket.onerror = (error) => {
@@ -51,7 +51,7 @@ resolve();
       };
 
       this.socket.onclose = () => {
-this.isConnected = false;
+        this.isConnected = false;
         this.socket = null;
 
         // Only auto-reconnect if this was NOT caused by us calling disconnect()
@@ -86,7 +86,7 @@ this.isConnected = false;
 
         // After reconnecting, automatically re-join the room we were in
         if (this.roomId) {
-this.joinRoom(this.roomId);
+          this.joinRoom(this.roomId);
         }
 
         this._triggerHandler('onReconnected', { peerId: this.peerId });
@@ -162,14 +162,6 @@ this.joinRoom(this.roomId);
     });
   }
 
-  sendIceCandidate(targetPeerID, candidate) {
-    this._send('ice-candidate', {
-      roomID: this.roomId,
-      targetPeerID,
-      candidate
-    });
-  }
-
   on(event, handler) {
     if (this.handlers.hasOwnProperty(event)) {
       this.handlers[event] = handler;
@@ -183,7 +175,6 @@ this.joinRoom(this.roomId);
   }
 
   disconnect() {
-    // Flag as intentional so onclose does NOT trigger auto-reconnect
     this._intentionalDisconnect = true;
 
     if (this._reconnectTimer) {
@@ -196,6 +187,32 @@ this.joinRoom(this.roomId);
       this.socket = null;
       this.isConnected = false;
     }
+  }
+
+  // --- MESH & SFU SIGNALING METHODS ---
+
+  sendOffer(targetPeerID, offer) {
+    this._send('offer', { roomID: this.roomId, targetPeerID, sdp: offer });
+  }
+
+  sendAnswer(targetPeerID, answer) {
+    this._send('answer', { roomID: this.roomId, targetPeerID, sdp: answer });
+  }
+
+  sendIceCandidate(roomID, targetPeerID, candidate) {
+    this._send('ice-candidate', { roomID, targetPeerID, candidate });
+  }
+
+  sendHostOffer(roomID, sdp) {
+    this._send('host-offer', { roomID, sdp });
+  }
+
+  sendReceiverRequest(roomID) {
+    this._send('receiver-request', { roomID });
+  }
+
+  sendReceiverAnswer(roomID, sdp) {
+    this._send('receiver-answer', { roomID, sdp });
   }
 }
 
