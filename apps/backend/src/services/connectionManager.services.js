@@ -8,6 +8,7 @@ import {
 } from "../config/config.redis.js";
 
 import { config } from "../config/config.env.js";
+import logger from "../config/config.logger.js";
 
 const SERVER_ID = crypto.randomUUID();
 
@@ -23,11 +24,12 @@ const SIGNAL_CHANNEL = (serverID) => `signal:${serverID}`;
 const BROADCAST_CHANNEL = "room-broadcast";
 
 const sendData = (ws, data) => {
-    if (!ws) return;
-
-    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return false;
+    }
 
     ws.send(JSON.stringify(data));
+    return true;
 };
 
 const refreshTTL = async (roomID) => {
@@ -38,8 +40,13 @@ const refreshTTL = async (roomID) => {
         .exec();
 };
 
-await redisSub.subscribe(SIGNAL_CHANNEL(SERVER_ID));
-await redisSub.subscribe(BROADCAST_CHANNEL);
+const subscriptionReady = Promise.all([
+    redisSub.subscribe(SIGNAL_CHANNEL(SERVER_ID)),
+    redisSub.subscribe(BROADCAST_CHANNEL)
+]).catch((err) => {
+    logger.error({ err }, "Failed to subscribe to signaling channels");
+    return [];
+});
 
 redisSub.on("message", async (channel, rawMessage) => {
     try {
@@ -47,9 +54,7 @@ redisSub.on("message", async (channel, rawMessage) => {
 
         if (channel === SIGNAL_CHANNEL(SERVER_ID)) {
             const ws = localPeers.get(data.targetPeerID);
-
             sendData(ws, data.payload);
-
             return;
         }
 
@@ -60,20 +65,14 @@ redisSub.on("message", async (channel, rawMessage) => {
                 payload
             } = data;
 
-            const peers = await redis.smembers(
-                PEERS_KEY(roomID)
-            );
-
-            for (const peerID of peers) {
-                if (peerID === excludePeerID) continue;
-
-                const ws = localPeers.get(peerID);
-
-                sendData(ws, payload);
-            }
+            localPeers.forEach((ws, peerID) => {
+                if (peerID !== excludePeerID && ws.roomID === roomID) {
+                    sendData(ws, payload);
+                }
+            });
         }
     } catch (err) {
-        console.error("Redis subscriber error:", err);
+        logger.error({ err }, "Redis subscriber error");
     }
 });
 
@@ -191,21 +190,40 @@ export const joinRoom = async (
         )
         .exec();
 
+    const previousSocket = localPeers.get(peerID);
+    if (
+        previousSocket &&
+        previousSocket !== ws &&
+        previousSocket.readyState === WebSocket.OPEN
+    ) {
+        previousSocket.skipDisconnectCleanup = true;
+        previousSocket.close();
+    }
+
     localPeers.set(peerID, ws);
 
     ws.roomID = roomID;
     ws.peerID = peerID;
     ws.isAlive = true;
+    ws.skipDisconnectCleanup = false;
 
     ws.on("pong", () => {
         ws.isAlive = true;
     });
 
     ws.on("close", async () => {
+        if (ws.skipDisconnectCleanup) {
+            return;
+        }
+
         await handleDisconnect(peerID);
     });
 
     ws.on("error", async () => {
+        if (ws.skipDisconnectCleanup) {
+            return;
+        }
+
         await handleDisconnect(peerID);
     });
 
@@ -256,19 +274,7 @@ export const broadcast = async (
     excludePeerID,
     payload
 ) => {
-
-    const peers = await redis.smembers(
-        PEERS_KEY(roomID)
-    );
-
-    for (const peerID of peers) {
-        if (peerID === excludePeerID) continue;
-
-        const ws = localPeers.get(peerID);
-
-        sendData(ws, payload);
-    }
-
+    await subscriptionReady;
     await redisPub.publish(
         BROADCAST_CHANNEL,
         JSON.stringify({
@@ -278,7 +284,6 @@ export const broadcast = async (
         })
     );
 };
-
 
 export const relaySignal = async (
     roomID,
@@ -294,15 +299,10 @@ export const relaySignal = async (
         }
     };
 
-    const localWs =
-        localPeers.get(targetPeerID);
+    const localWs = localPeers.get(targetPeerID);
 
-    if (
-        localWs &&
-        localWs.readyState === WebSocket.OPEN
-    ) {
-        sendData(localWs, payload);
-
+    if (sendData(localWs, payload)) {
+        await refreshTTL(roomID);
         return;
     }
 
@@ -314,6 +314,7 @@ export const relaySignal = async (
         return;
     }
 
+    await subscriptionReady;
     await redisPub.publish(
         SIGNAL_CHANNEL(targetServerID),
         JSON.stringify({
@@ -335,16 +336,12 @@ export const handleDisconnect = async (
 
         if (!roomID) {
             localPeers.delete(peerID);
-
             return;
         }
 
         await leaveRoom(roomID, peerID);
     } catch (err) {
-        console.error(
-            "Disconnect cleanup error:",
-            err
-        );
+        logger.error({ err }, "Disconnect cleanup error");
     }
 };
 

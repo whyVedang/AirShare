@@ -4,7 +4,7 @@ import SignalingClient from "../infrastructure/signalingClient";
 import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
 import JSZip from 'jszip';
-import { CryptoService } from "../security/CryptoService.js";
+import { CryptoService } from "../domain/security/CryptoService.js";
 import { OPFSService } from "../domain/transfer/OPFS.js";
 import ChunkManager from "../domain/transfer/ChunkManager.js";
 
@@ -16,6 +16,9 @@ const Room = ({ roomId, onLeave }) => {
   // -- MESH NETWORK MAPS --
   const peersRef = useRef(new Map());
   const transfersRef = useRef(new Map());
+  const pendingIceCandidatesRef = useRef(new Map());
+  const makingOfferRef = useRef(new Set());
+  const fallbackTimersRef = useRef(new Map());
 
   const didInit = useRef(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
@@ -79,12 +82,130 @@ const Room = ({ roomId, onLeave }) => {
       peersRef.current.forEach(peer => peer.close());
       transfersRef.current.clear();
       peersRef.current.clear();
+      pendingIceCandidatesRef.current.clear();
+      makingOfferRef.current.clear();
+      fallbackTimersRef.current.forEach(timer => clearTimeout(timer));
+      fallbackTimersRef.current.clear();
 
       client.disconnect();
       addLog('Disconnected');
       didInit.current = false;
     };
   }, [roomId]);
+
+  const rememberPeerInUi = (peerID, status = 'connecting') => {
+    if (!peerID || peerID === clientRef.current?.peerId) return;
+
+    setActivePeers(prev => {
+      if (prev.some(peer => peer.id === peerID)) {
+        return prev.map(peer => {
+          if (peer.id !== peerID) return peer;
+          const nextStatus = peer.status === 'connected' && status === 'connecting'
+            ? peer.status
+            : status;
+          return { ...peer, status: nextStatus };
+        });
+      }
+
+      return [...prev, { id: peerID, status, latency: null }];
+    });
+
+    setSelectedPeers(prev => new Set([...prev, peerID]));
+  };
+
+  const getOrCreatePeer = (peerID) => {
+    if (!peerID || peerID === clientRef.current?.peerId) return null;
+
+    const existingPeer = peersRef.current.get(peerID);
+    if (existingPeer) return existingPeer;
+
+    rememberPeerInUi(peerID);
+
+    const peer = new PeerEngine();
+    peer.initialize();
+    peersRef.current.set(peerID, peer);
+    setupPeer(peer, peerID);
+
+    return peer;
+  };
+
+  const queueIceCandidate = (peerID, candidate) => {
+    const queued = pendingIceCandidatesRef.current.get(peerID) || [];
+    queued.push(candidate);
+    pendingIceCandidatesRef.current.set(peerID, queued);
+  };
+
+  const flushPendingIceCandidates = async (peerID) => {
+    const peer = peersRef.current.get(peerID);
+    const queued = pendingIceCandidatesRef.current.get(peerID);
+
+    if (!peer || !peer.hasRemoteDescription() || !queued || queued.length === 0) {
+      return;
+    }
+
+    pendingIceCandidatesRef.current.delete(peerID);
+
+    for (const candidate of queued) {
+      try {
+        await peer.addIceCandidate(candidate);
+      } catch (err) {
+        console.warn(`Dropped ICE candidate for ${peerID}:`, err);
+      }
+    }
+  };
+
+  const startOffer = async (peerID, reason = 'mesh') => {
+    const client = clientRef.current;
+    const peer = getOrCreatePeer(peerID);
+
+    if (!client || !peer || makingOfferRef.current.has(peerID)) return;
+
+    if (peer.getSignalingState() !== 'stable') {
+      addLog(`Offer delayed for ${peerID.substring(0, 8)}: signaling busy`);
+      return;
+    }
+
+    try {
+      makingOfferRef.current.add(peerID);
+
+      if (!peer.hasDataChannel()) {
+        peer.createDataChannel('airshare-data');
+      }
+
+      const offer = await peer.createOffer();
+      client.sendOffer(peerID, offer);
+      addLog(`Offer sent to ${peerID.substring(0, 8)} (${reason})`);
+    } catch (err) {
+      console.error("Failed to create offer:", err);
+      addLog(`Offer failed for ${peerID.substring(0, 8)}`);
+    } finally {
+      makingOfferRef.current.delete(peerID);
+    }
+  };
+
+  const shouldSendFallbackOffer = (peerID) => {
+    const localPeerID = clientRef.current?.peerId;
+    return Boolean(localPeerID && peerID && localPeerID < peerID);
+  };
+
+  const scheduleFallbackOffer = (peerID) => {
+    if (!shouldSendFallbackOffer(peerID) || fallbackTimersRef.current.has(peerID)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      fallbackTimersRef.current.delete(peerID);
+      const peer = peersRef.current.get(peerID);
+
+      if (peer?.hasRemoteDescription() || peer?.isReady()) {
+        return;
+      }
+
+      startOffer(peerID, 'fallback');
+    }, 6000);
+
+    fallbackTimersRef.current.set(peerID, timer);
+  };
 
   const registerHandlers = (client) => {
     client.on('onReconnecting', ({ attempt, delay }) => {
@@ -95,68 +216,64 @@ const Room = ({ roomId, onLeave }) => {
       addLog('Reconnected to signaling server');
     });
 
-    client.on('onRoomJoined', (peersList) => {
-      addLog(`Existing peers: ${peersList.length}`);
-      if (peersList.length === 0) addLog('Waiting for peers...');
+    client.on('onRoomJoined', (peersList = []) => {
+      const existingPeers = peersList.filter(peerID => peerID && peerID !== client.peerId);
+
+      addLog(`Existing peers: ${existingPeers.length}`);
+      if (existingPeers.length === 0) {
+        addLog('Waiting for peers...');
+        return;
+      }
+
+      existingPeers.forEach(peerID => {
+        rememberPeerInUi(peerID);
+        startOffer(peerID, 'existing peer');
+      });
     });
 
-    client.on('onPeerJoined', async (peerID) => {
+    client.on('onPeerJoined', (peerID) => {
+      if (!peerID || peerID === client.peerId) return;
+
       if (peersRef.current.has(peerID)) {
         addLog(`Peer rejoined (WebRTC self-healing active): ${peerID}`);
+        scheduleFallbackOffer(peerID);
         return;
       }
 
       addLog(`Peer joined: ${peerID}`);
-
-      setActivePeers(prev => [...prev, { id: peerID, status: 'connecting', latency: null }]);
-      // Auto-select new peer by default
-      setSelectedPeers(prev => new Set([...prev, peerID]));
-
-      const peer = new PeerEngine();
-      peer.initialize();
-      peersRef.current.set(peerID, peer);
-
-      setupPeer(peer, peerID);
-      peer.createDataChannel('airshare-data');
-
-      try {
-        const offer = await peer.createOffer();
-        client.sendOffer(peerID, offer);
-      } catch (err) {
-        console.error("Failed to create offer:", err);
-      }
+      rememberPeerInUi(peerID);
+      scheduleFallbackOffer(peerID);
     });
 
     client.on('onOffer', async ({ sdp, from }) => {
-      if (peersRef.current.has(from)) {
-        addLog(`Received renegotiation offer from ${from}`);
-        const peer = peersRef.current.get(from);
-        try {
-          await peer.setRemoteDescription(sdp);
-          const answer = await peer.createAnswer();
-          client.sendAnswer(from, answer);
-        } catch (err) {
-          console.error("Failed to handle renegotiation offer:", err);
-        }
-        return;
-      }
+      if (!from || from === client.peerId) return;
 
       addLog(`Received offer from ${from}`);
+      rememberPeerInUi(from);
 
-      setActivePeers(prev => {
-        if (!prev.find(p => p.id === from)) return [...prev, { id: from, status: 'connecting', latency: null }];
-        return prev;
-      });
-      setSelectedPeers(prev => new Set([...prev, from]));
-
-      const peer = new PeerEngine();
-      peer.initialize();
-      peersRef.current.set(from, peer);
-
-      setupPeer(peer, from);
+      const peer = getOrCreatePeer(from);
+      const polite = client.peerId > from;
+      const signalingState = peer.getSignalingState();
+      const offerCollision = makingOfferRef.current.has(from) || signalingState !== 'stable';
 
       try {
+        if (offerCollision) {
+          if (!polite) {
+            addLog(`Ignored colliding offer from ${from.substring(0, 8)}`);
+            return;
+          }
+
+          if (signalingState === 'have-local-offer' || makingOfferRef.current.has(from)) {
+            await peer.rollbackLocalDescription();
+          } else {
+            addLog(`Offer skipped from ${from.substring(0, 8)}: signaling busy`);
+            return;
+          }
+        }
+
         await peer.setRemoteDescription(sdp);
+        await flushPendingIceCandidates(from);
+
         const answer = await peer.createAnswer();
         client.sendAnswer(from, answer);
       } catch (err) {
@@ -166,15 +283,31 @@ const Room = ({ roomId, onLeave }) => {
 
     client.on('onAnswer', async ({ sdp, from }) => {
       const peer = peersRef.current.get(from);
-      if (peer) await peer.setRemoteDescription(sdp);
+      if (!peer) {
+        addLog(`Answer ignored from unknown peer: ${from}`);
+        return;
+      }
+
+      try {
+        await peer.setRemoteDescription(sdp);
+        await flushPendingIceCandidates(from);
+      } catch (err) {
+        console.error("Failed to handle answer:", err);
+      }
     });
 
     client.on('onIceCandidate', async ({ candidate, from }) => {
       const peer = peersRef.current.get(from);
-      if (peer) {
-        try {
-          await peer.addIceCandidate(candidate);
-        } catch (err) { }
+
+      if (!peer || !peer.hasRemoteDescription()) {
+        queueIceCandidate(from, candidate);
+        return;
+      }
+
+      try {
+        await peer.addIceCandidate(candidate);
+      } catch (err) {
+        queueIceCandidate(from, candidate);
       }
     });
 
@@ -189,6 +322,12 @@ const Room = ({ roomId, onLeave }) => {
 
       transfersRef.current.delete(peerID);
       peersRef.current.delete(peerID);
+      pendingIceCandidatesRef.current.delete(peerID);
+      makingOfferRef.current.delete(peerID);
+
+      const timer = fallbackTimersRef.current.get(peerID);
+      if (timer) clearTimeout(timer);
+      fallbackTimersRef.current.delete(peerID);
 
       setActivePeers(prev => prev.filter(p => p.id !== peerID));
       setSelectedPeers(prev => {
@@ -202,7 +341,6 @@ const Room = ({ roomId, onLeave }) => {
     const client = clientRef.current;
 
     peer.on('onIceCandidate', (candidate) => {
-      // FIX: Added `roomId` as the first argument 
       client.sendIceCandidate(roomId, targetPeerID, candidate);
     });
 
@@ -497,7 +635,7 @@ const Room = ({ roomId, onLeave }) => {
     const peerEngine = new PeerEngine();
     const transferController = new TransferController(
       peerEngine,
-      CryptoService,
+      cryptoService,
       (progress) => console.log("Upload Progress:", progress)
     );
 

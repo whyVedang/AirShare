@@ -44,6 +44,7 @@ const handleMessage = async (ws, data) => {
 
     switch (type) {
         case "join-room":
+            ws.peerID = payload.peerID || ws.peerID;
             await CM.joinRoom(payload.roomID, ws.peerID, ws);
             break;
 

@@ -9,4 +9,11 @@ redis.on("error", (err) => {
     logger.error({ err }, "Redis connection error")
 })
 export const redisPub = new Redis(config.REDIS_URL)
+redisPub.on("error", (err) => {
+    logger.error({ err }, "Redis publisher connection error")
+})
+
 export const redisSub = redisPub.duplicate()
+redisSub.on("error", (err) => {
+    logger.error({ err }, "Redis subscriber connection error")
+})

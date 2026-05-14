@@ -8,9 +8,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
   const [isGenerating, setIsGenerating] = useState(false);
 
   const handleCreateRoom = async () => {
-    const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    if (isGenerating) return;
+
+    setIsGenerating(true);
+
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/rooms`, {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+      const response = await fetch(`${apiUrl}/api/v1/room/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" }
       });
@@ -19,18 +23,13 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
 
       const data = await response.json();
 
-      navigate(`/room/${data.roomID}`);
+      if (onJoinRoom) {
+        onJoinRoom(data.roomID);
+      }
     } catch (error) {
       console.error("Error creating room:", error);
       alert("Could not create room. Please try again.");
-    }
-
-    setIsGenerating(true);
-
-    if (onJoinRoom) {
-      setTimeout(() => {
-        onJoinRoom(newRoomId);
-      }, 1000);
+      setIsGenerating(false);
     }
   };
 
