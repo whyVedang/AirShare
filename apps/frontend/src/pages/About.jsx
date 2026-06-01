@@ -17,7 +17,7 @@ const About = ({ onBack }) => {
     { name: 'React', why: 'Fast component-based UI' },
     { name: 'Framer Motion', why: 'Smooth interactions' },
     { name: 'Tailwind CSS', why: 'Utility-first design system' },
-    { name: 'Node.js + Socket.io', why: 'Minimal signaling server' },
+    { name: 'WebSocket Signaling', why: 'Minimal room discovery server' },
     { name: 'ChunkManager', why: 'Adaptive 16KB-64KB chunking' }
   ];
 
@@ -394,7 +394,7 @@ const About = ({ onBack }) => {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
           >
-            ← Back to Home
+            &lt; Back to Home
           </motion.button>
         </motion.div>
       </section>

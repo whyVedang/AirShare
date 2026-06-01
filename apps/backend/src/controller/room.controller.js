@@ -25,8 +25,7 @@ export const createRoom = async (req, res, next) => {
             roomID: roomID 
         });
     } catch (error) {
-        console.error("Error creating room:", error);
-        res.status(500).json({ success: false, message: "Failed to create room" });
+        next(error);
     }
 };
 export const joinRoom = async (req, res, next) => {
@@ -44,20 +43,6 @@ export const joinRoom = async (req, res, next) => {
             success: true,
             message: "Room available",
             peers: result.peerCount
-        });
-    } catch (err) {
-        next(err);
-    }
-};
-
-export const getAllRoom = async (req, res, next) => {
-    try {
-        const rooms = await Services.getAllRooms();
-
-        res.status(200).json({
-            success: true,
-            count: rooms.length,
-            rooms
         });
     } catch (err) {
         next(err);

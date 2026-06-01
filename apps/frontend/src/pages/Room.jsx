@@ -4,9 +4,6 @@ import SignalingClient from "../infrastructure/signalingClient";
 import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
 import JSZip from 'jszip';
-import { CryptoService } from "../domain/security/CryptoService.js";
-import { OPFSService } from "../domain/transfer/OPFS.js";
-import ChunkManager from "../domain/transfer/ChunkManager.js";
 
 const MESH_SEND_BATCH_SIZE = 3;
 
@@ -216,6 +213,14 @@ const Room = ({ roomId, onLeave }) => {
       addLog('Reconnected to signaling server');
     });
 
+    client.on('onError', (error) => {
+      const message = error?.message || 'Signaling error';
+      addLog(`Signaling error: ${message}`);
+      if (/room|join|invalid/i.test(message)) {
+        setConnectionStatus('failed');
+      }
+    });
+
     client.on('onRoomJoined', (peersList = []) => {
       const existingPeers = peersList.filter(peerID => peerID && peerID !== client.peerId);
 
@@ -358,8 +363,6 @@ const Room = ({ roomId, onLeave }) => {
       channel.binaryType = 'arraybuffer';
 
       const tc = new TransferController(
-        peer,
-        null, // No CryptoService attached for standard mesh currently
         (progress) => {
           setFiles(prev => prev.map(f => f.status === 'Sending' ? { ...f, progress } : f));
         },
@@ -372,7 +375,7 @@ const Room = ({ roomId, onLeave }) => {
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
-          URL.revokeObjectURL(url);
+          setTimeout(() => URL.revokeObjectURL(url), 0);
         },
         (avgLatency) => {
           setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, latency: avgLatency } : p));
@@ -621,42 +624,6 @@ const Room = ({ roomId, onLeave }) => {
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
   const handleZoneClick = () => { if (fileInputRef.current) fileInputRef.current.click(); };
 
-  // New Init System for SFU mode bridging
-  const initializeTransferServices = async (roomPassword) => {
-    // 1. Initialize Crypto
-    const cryptoService = new CryptoService();
-    await cryptoService.deriveKeyFromPassword(roomPassword || "default-secure-room-key");
-
-    // 2. Initialize OPFS
-    const opfsService = new OPFSService();
-
-    // 3. Setup Sender Controller
-    // Note: peerEngine here would need to be bound or passed from state when adopting the SFU peer
-    const peerEngine = new PeerEngine();
-    const transferController = new TransferController(
-      peerEngine,
-      cryptoService,
-      (progress) => console.log("Upload Progress:", progress)
-    );
-
-    const handleFileUpload = async (file) => {
-      await transferController.sendFile(file);
-    };
-
-    // 4. Setup Receiver Manager
-    const chunkManager = new ChunkManager(
-      cryptoService,
-      opfsService,
-      (fileName) => alert(`Download Complete: ${fileName}`),
-      (progress) => console.log("Download Progress:", progress)
-    );
-
-    // 5. Tell the Peer Engine to route incoming data to the ChunkManager
-    peerEngine.on('data-received', (data) => chunkManager.handleIncomingData(data));
-
-    return { transferController, chunkManager, handleFileUpload };
-  };
-
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen p-8 font-['Inter',sans-serif]">
       {/* Header */}
@@ -776,6 +743,8 @@ const Room = ({ roomId, onLeave }) => {
                     <span className="absolute w-2.5 h-2.5 rounded-full bg-[#FF5C00] animate-ping" />
                     <span className="absolute w-2.5 h-2.5 rounded-full bg-[#FF5C00]" />
                   </>
+                ) : connectionStatus === 'failed' ? (
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500" style={{ boxShadow: '0 0 8px rgba(239, 68, 68, 0.6)' }} />
                 ) : (
                   <span className="w-2.5 h-2.5 rounded-full bg-green-500" style={{ boxShadow: '0 0 8px rgba(34, 197, 94, 0.6)' }} />
                 )}
@@ -783,6 +752,8 @@ const Room = ({ roomId, onLeave }) => {
               <span className="text-gray-300 text-sm font-medium">
                 {connectionStatus === 'connecting'
                   ? 'Connecting to server...'
+                  : connectionStatus === 'failed'
+                    ? 'Connection failed'
                   : (activePeers.filter(p => p.status === 'connected').length > 0 ? 'Active' : 'Waiting for peers...')}
               </span>
             </div>

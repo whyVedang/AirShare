@@ -3,8 +3,7 @@ import CongestionController from "./congestionControl.js";
 import ChunkManager from "./ChunkManager.js"; 
 
 class TransferController {
-    constructor(peerEngine, cryptoService, onProgress, onComplete, onLatency) {
-        this.peerEngine = peerEngine;
+    constructor(onProgress, onComplete, onLatency) {
         this.channel = null;
 
         // Instantiate core logic blocks
@@ -19,9 +18,6 @@ class TransferController {
 
         this.messageInterval = null;
         this.handleMessage = this.handleMessage.bind(this);
-
-        this.cryptoService = cryptoService;    
-        this.CHUNK_SIZE = 64 * 1024; // 64KB default chunk size
     }
 
     attachChannel(channel) {
@@ -57,7 +53,7 @@ class TransferController {
                 }
             }
 
-            const result = this.chunkManager.handleIncomingData(event.data);
+            const result = await this.chunkManager.handleIncomingData(event.data);
 
             if (!result) return;
 
@@ -116,59 +112,6 @@ class TransferController {
         );
     }
 
-    // New Encrypted SFU send
-    async sendFile(file) {
-        const metadata = JSON.stringify({
-            type: "metadata",
-            name: file.name,
-            size: file.size
-        });
-        this.peerEngine.sendData(metadata);
-
-        let offset = 0;
-        let sequence = 0;
-
-        while (offset < file.size) {
-            // BACKPRESSURE: Wait if the buffer is too full
-            if (this.peerEngine.dataChannel.bufferedAmount > 16 * 1024 * 1024) {
-                await new Promise(resolve => {
-                    this.peerEngine.dataChannel.onbufferedamountlow = () => {
-                        this.peerEngine.dataChannel.onbufferedamountlow = null;
-                        resolve();
-                    };
-                });
-            }
-
-            // 2. Read the raw chunk from the local file
-            const chunkBlob = file.slice(offset, offset + this.CHUNK_SIZE);
-            const chunkBuffer = await chunkBlob.arrayBuffer();
-
-            // 3. Encrypt the chunk (Sequence number is used as the IV)
-            const encryptedBuffer = await this.cryptoService.encryptChunk(chunkBuffer, sequence);
-
-            // 4. Pack the payload: [ 4-byte Sequence Header ][ Encrypted Data ]
-            const payload = this._packChunk(sequence, encryptedBuffer);
-
-            // 5. Send the binary payload to the SFU
-            this.peerEngine.sendData(payload);
-
-            offset += this.CHUNK_SIZE;
-            sequence++;
-            
-            if (this.onProgress) this.onProgress(Math.round((offset / file.size) * 100));
-        }
-    }
-
-    _packChunk(sequence, encryptedBuffer) {
-        const header = new ArrayBuffer(4);
-        new DataView(header).setUint32(0, sequence, true);
-
-        const payload = new Uint8Array(4 + encryptedBuffer.byteLength);
-        payload.set(new Uint8Array(header), 0);
-        payload.set(new Uint8Array(encryptedBuffer), 4);
-
-        return payload.buffer;
-    }
 }
 
 export default TransferController;

@@ -5,37 +5,31 @@ export class OPFSService {
     }
 
     async initFile(fileName) {
-        // Access the private sandboxed file system
+        const safeName = fileName.replace(/[\\/:*?"<>|]/g, "_");
         const rootDir = await navigator.storage.getDirectory();
-        
-        // Create a new file handle
-        this.fileHandle = await rootDir.getFileHandle(fileName, { create: true });
-        
-        // Open a high-performance writable stream
+        this.fileHandle = await rootDir.getFileHandle(safeName, { create: true });
         this.writableStream = await this.fileHandle.createWritable();
-        console.log(`[OPFS] Ready to stream: ${fileName}`);
     }
 
-    async writeChunk(chunkData) {
+    async writeChunk(chunkData, position) {
         if (!this.writableStream) throw new Error("Stream not initialized");
+
+        if (Number.isFinite(position)) {
+            await this.writableStream.write({
+                type: "write",
+                position,
+                data: chunkData
+            });
+            return;
+        }
+
         await this.writableStream.write(chunkData);
     }
 
-    async finishAndDownload() {
+    async finish() {
         await this.writableStream.close();
-        
-        // Get the final file from OPFS to trigger standard browser download
         const file = await this.fileHandle.getFile();
-        const url = URL.createObjectURL(file);
-        
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = file.name;
-        document.body.appendChild(a);
-        a.click();
-        
-        // Cleanup
-        URL.revokeObjectURL(url);
-        document.body.removeChild(a);
+        this.writableStream = null;
+        return file;
     }
 }

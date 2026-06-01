@@ -16,9 +16,6 @@ class SignalingClient {
       onReconnecting: null,
       onReconnected: null,
       onWelcome: null,
-      'server-answer': null,
-      'server-offer': null,
-      'server-ice-candidate': null,
     };
 
     this._intentionalDisconnect = false;
@@ -62,8 +59,12 @@ class SignalingClient {
       };
 
       this.socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        this._handleMessage(data);
+        try {
+          const data = JSON.parse(event.data);
+          this._handleMessage(data);
+        } catch (error) {
+          this._triggerHandler('onError', { message: 'Invalid signaling message' });
+        }
       };
     });
   }
@@ -129,16 +130,8 @@ class SignalingClient {
         this._triggerHandler('onIceCandidate', payload);
         break;
 
-      case 'server-answer':
-        this._triggerHandler('server-answer', payload);
-        break;
-
-      case 'server-offer':
-        this._triggerHandler('server-offer', payload);
-        break;
-
-      case 'server-ice-candidate':
-        this._triggerHandler('server-ice-candidate', payload);
+      case 'error':
+        this._triggerHandler('onError', payload);
         break;
 
       default:
@@ -178,18 +171,6 @@ class SignalingClient {
     const candidate = hasExplicitRoom ? maybeCandidate : targetPeerIDOrCandidate;
 
     this._send('ice-candidate', { roomID, targetPeerID, candidate });
-  }
-
-  sendHostOffer(roomID, sdp) {
-    this._send('host-offer', { roomID, sdp });
-  }
-
-  sendReceiverRequest(roomID) {
-    this._send('receiver-request', { roomID });
-  }
-
-  sendReceiverAnswer(roomID, sdp) {
-    this._send('receiver-answer', { roomID, sdp });
   }
 
   on(event, handler) {

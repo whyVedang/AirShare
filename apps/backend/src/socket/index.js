@@ -1,10 +1,13 @@
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import * as CM from "../services/connectionManager.services.js";
-import * as SFU from "../services/sfu.services.js";
 import crypto from "crypto";
+import logger from "../config/config.logger.js";
 
 export const WebSocketINIT = (server) => {
-    const wss = new WebSocketServer({ server });
+    const wss = new WebSocketServer({
+        server,
+        maxPayload: 64 * 1024
+    });
     CM.setupHeartbeat(wss);
     
     wss.on("connection", (ws) => {
@@ -17,65 +20,78 @@ export const WebSocketINIT = (server) => {
 
         ws.on("message", async (raw) => {
             try {
-                const data = JSON.parse(raw);
+                const data = JSON.parse(raw.toString());
                 await handleMessage(ws, data);
             } catch (err) {
-                console.error("Invalid WebSocket message:", err.message);
+                sendError(ws, "Invalid WebSocket message");
             }
         });
 
-        // NEW: Tell the SFU Engine to clean up RAM when someone drops
-        ws.on("close", () => {
-            if (ws.roomID && ws.peerID) {
-                SFU.removePeer(ws.roomID, ws.peerID);
+        ws.on("error", (err) => {
+            if (err.code !== "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH") {
+                logger.warn({ err }, "WebSocket connection error");
             }
         });
+
     });
 };
 
+const isPlainObject = (value) => (
+    value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value)
+);
+
+const sendError = (ws, message) => {
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+            type: "error",
+            payload: { message }
+        }));
+    }
+};
+
 const handleMessage = async (ws, data) => {
+    if (!isPlainObject(data) || typeof data.type !== "string") {
+        sendError(ws, "Invalid WebSocket message");
+        return;
+    }
+
     const { type, payload } = data;
-    
-    const wsSend = (msg) => {
-        if (ws.readyState === 1) { 
-            ws.send(JSON.stringify(msg));
-        }
-    };
 
     switch (type) {
         case "join-room":
+            if (
+                !isPlainObject(payload) ||
+                typeof payload.roomID !== "string" ||
+                (payload.peerID !== undefined && typeof payload.peerID !== "string")
+            ) {
+                sendError(ws, "Invalid join-room payload");
+                return;
+            }
+
             ws.peerID = payload.peerID || ws.peerID;
             await CM.joinRoom(payload.roomID, ws.peerID, ws);
             break;
 
-        case "host-offer":
-            SFU.handleHostOffer(payload.roomID, ws.peerID, payload.sdp, wsSend);
-            break;
-
-        case "receiver-request":
-            SFU.handleReceiverJoin(payload.roomID, ws.peerID, wsSend);
-            break;
-
-        case "receiver-answer":
-            SFU.handleClientAnswer(payload.roomID, ws.peerID, payload.sdp);
-            break;
-
         case "offer":
         case "answer":
-            if (payload.targetPeerID && payload.targetPeerID !== 'server') {
-                await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, data);
-            }
-            break;
-
         case "ice-candidate":
-            if (payload.targetPeerID && payload.targetPeerID !== 'server') {
+            if (
+                !isPlainObject(payload) ||
+                typeof payload.roomID !== "string" ||
+                typeof payload.targetPeerID !== "string"
+            ) {
+                sendError(ws, `Invalid ${type} payload`);
+                return;
+            }
+
+            if (payload.targetPeerID !== "server") {
                 await CM.relaySignal(payload.roomID, ws.peerID, payload.targetPeerID, data);
-            } else {
-                SFU.addClientIceCandidate(payload.roomID, ws.peerID, payload.candidate);
             }
             break;
 
         default:
-            console.warn("Unknown WebSocket message type:", type);
+            sendError(ws, "Unknown WebSocket message type");
     }
 };

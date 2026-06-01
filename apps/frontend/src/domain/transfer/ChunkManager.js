@@ -1,9 +1,21 @@
+import { OPFSService } from "./OPFS.js";
+
+const PACKET_HEADER_BYTES = 12;
+const CHUNK_PROTOCOL_VERSION = 2;
+
+const canUseOPFS = () => (
+  typeof navigator !== "undefined" &&
+  Boolean(navigator.storage?.getDirectory)
+);
+
 class ChunkManager {
-  constructor() {
+  constructor({ useOPFS = true } = {}) {
     this.receivedChunks = new Map();
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
+    this.useOPFS = useOPFS;
+    this.opfsService = null;
   }
 
   async sendFile(file, channel, congestionController, latencyController, onProgress) {
@@ -18,7 +30,8 @@ class ChunkManager {
       metadata: {
         name: file.name,
         size: file.size,
-        type: file.type || 'application/octet-stream'
+        type: file.type || 'application/octet-stream',
+        chunkProtocol: CHUNK_PROTOCOL_VERSION
       }
     }));
 
@@ -42,12 +55,13 @@ class ChunkManager {
       const blob = file.slice(offset, offset + chunkSize);
       const arrayBuffer = await blob.arrayBuffer();
 
-      const packet = new Uint8Array(4 + arrayBuffer.byteLength);
+      const packet = new Uint8Array(PACKET_HEADER_BYTES + arrayBuffer.byteLength);
       const view = new DataView(packet.buffer);
-      view.setUint32(0, chunkIndex); // Write index at start
-      packet.set(new Uint8Array(arrayBuffer), 4); // Write data after index
+      view.setUint32(0, chunkIndex, true);
+      view.setBigUint64(4, BigInt(offset), true);
+      packet.set(new Uint8Array(arrayBuffer), PACKET_HEADER_BYTES);
 
-      channel.send(packet);
+      channel.send(packet.buffer);
 
       offset += chunkSize;
       chunkIndex++;
@@ -111,28 +125,93 @@ class ChunkManager {
     });
   }
 
-  handleIncomingData(data) {
-    if (data instanceof ArrayBuffer) {
-      // Extract Index from the first 4 bytes
-      const view = new DataView(data);
-      const index = view.getUint32(0);
-      const chunkData = data.slice(4); // Actual file content
+  async handleIncomingData(data) {
+    if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+      const packet = this.unpackPacket(this.toArrayBuffer(data));
+      if (!packet) return null;
 
-      this.receivedChunks.set(index, chunkData);
-      this.receivedBytes += chunkData.byteLength;
+      if (this.opfsService) {
+        await this.opfsService.writeChunk(packet.chunkData, packet.offset);
+      } else {
+        this.receivedChunks.set(packet.index, packet.chunkData);
+      }
+
+      this.receivedBytes += packet.chunkData.byteLength;
       return { type: 'progress', value: this.getReceiverProgress() };
     } 
     
     const msg = JSON.parse(data);
     if (msg.type === "file-meta") {
-      this.fileMetadata = msg.metadata;
+      await this.prepareReceive(msg.metadata);
       return { type: 'meta', value: msg.metadata };
     }
     if (msg.type === "file-end") {
       this.totalChunks = msg.totalChunks;
-      const filename = this.fileMetadata?.name;
-      return { type: 'complete', value: this.assembleChunks(), filename };
+      return this.completeReceive();
     }
+  }
+
+  unpackPacket(data) {
+    if (data.byteLength < 4) {
+      return null;
+    }
+
+    const view = new DataView(data);
+    const index = view.getUint32(0, true);
+
+    if (
+      this.fileMetadata?.chunkProtocol === CHUNK_PROTOCOL_VERSION &&
+      data.byteLength >= PACKET_HEADER_BYTES
+    ) {
+      const offset = Number(view.getBigUint64(4, true));
+      return {
+        index,
+        offset,
+        chunkData: data.slice(PACKET_HEADER_BYTES)
+      };
+    }
+
+    return {
+      index,
+      offset: this.receivedBytes,
+      chunkData: data.slice(4)
+    };
+  }
+
+  toArrayBuffer(data) {
+    if (data instanceof ArrayBuffer) {
+      return data;
+    }
+
+    return data.buffer.slice(
+      data.byteOffset,
+      data.byteOffset + data.byteLength
+    );
+  }
+
+  async prepareReceive(metadata) {
+    this.reset();
+    this.fileMetadata = metadata;
+
+    if (this.useOPFS && canUseOPFS()) {
+      this.opfsService = new OPFSService();
+      await this.opfsService.initFile(metadata.name);
+    }
+  }
+
+  async completeReceive() {
+    const filename = this.fileMetadata?.name;
+    const file = this.opfsService
+      ? await this.opfsService.finish()
+      : this.assembleChunks();
+
+    this.reset();
+
+    return {
+      type: 'complete',
+      value: file,
+      filename
+    };
   }
 
   assembleChunks() {
@@ -143,7 +222,6 @@ class ChunkManager {
       ordered.push(chunk);
     }
     const blob = new Blob(ordered, { type: this.fileMetadata.type });
-    this.reset();
     return blob;
   }
 
@@ -157,6 +235,7 @@ class ChunkManager {
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
+    this.opfsService = null;
   }
 }
 
