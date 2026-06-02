@@ -3,8 +3,8 @@ class SignalingClient {
     this.serverUrl = serverUrl;
     this.socket = null;
     this.isConnected = false;
-    this.roomId = null;
-    this.peerId = null;
+    this.roomID = null;
+    this.peerID = null;
     this.handlers = {
       onRoomJoined: null,
       onPeerJoined: null,
@@ -28,8 +28,9 @@ class SignalingClient {
     return new Promise((resolve, reject) => {
       if (this.isConnected) return resolve();
 
-      if (!this.peerId) {
-        this.peerId = crypto.randomUUID();
+      // Generate a stable peerID that survives reconnects within the same session
+      if (!this.peerID) {
+        this.peerID = crypto.randomUUID();
       }
 
       this.socket = new WebSocket(this.serverUrl);
@@ -84,11 +85,12 @@ class SignalingClient {
       try {
         await this.connect();
 
-        if (this.roomId) {
-          this.joinRoom(this.roomId);
+        // After reconnecting, automatically re-join the room we were in
+        if (this.roomID) {
+          this.joinRoom(this.roomID);
         }
 
-        this._triggerHandler('onReconnected', { peerId: this.peerId });
+        this._triggerHandler('onReconnected', { peerID: this.peerID });
       } catch (err) {
         console.warn('[WS] Reconnect attempt failed:', err);
       }
@@ -149,29 +151,36 @@ class SignalingClient {
   }
 
   joinRoom(roomID) {
-    this.roomId = roomID;
+    this.roomID = roomID;
     this._send('join-room', {
       roomID,
-      peerID: this.peerId
+      peerID: this.peerID
     });
   }
 
   sendOffer(targetPeerID, offer) {
-    this._send('offer', { roomID: this.roomId, targetPeerID, sdp: offer });
+    this._send('offer', {
+      roomID: this.roomID,
+      targetPeerID,
+      sdp: offer
+    });
   }
 
   sendAnswer(targetPeerID, answer) {
-    this._send('answer', { roomID: this.roomId, targetPeerID, sdp: answer });
+    this._send('answer', {
+      roomID: this.roomID,
+      targetPeerID,
+      sdp: answer
+    });
   }
-
+  
   sendIceCandidate(roomIDOrTargetPeerID, targetPeerIDOrCandidate, maybeCandidate) {
     const hasExplicitRoom = maybeCandidate !== undefined;
-    const roomID = hasExplicitRoom ? roomIDOrTargetPeerID : this.roomId;
+    const roomID = hasExplicitRoom ? roomIDOrTargetPeerID : this.roomID;
     const targetPeerID = hasExplicitRoom ? targetPeerIDOrCandidate : roomIDOrTargetPeerID;
     const candidate = hasExplicitRoom ? maybeCandidate : targetPeerIDOrCandidate;
 
     this._send('ice-candidate', { roomID, targetPeerID, candidate });
-  }
 
   on(event, handler) {
     if (Object.prototype.hasOwnProperty.call(this.handlers, event)) {

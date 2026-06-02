@@ -6,6 +6,11 @@ import TransferController from "../domain/transfer/TransferController";
 import { createTransferId } from "../domain/transfer/transferProtocol";
 import JSZip from 'jszip';
 
+
+import { CryptoService } from "../domain/security/CryptoService.js";
+import { OPFSService } from "../domain/transfer/OPFS.js";
+import ChunkManager from "../domain/transfer/ChunkManager.js";
+
 const MESH_SEND_BATCH_SIZE = 3;
 const MESH_SOFT_PEER_LIMIT = 16;
 const RECEIVER_AUTO_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
@@ -869,12 +874,12 @@ const Room = ({ roomId, onLeave }) => {
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen p-8 font-['Inter',sans-serif]">
       {/* Header */}
       <motion.div variants={itemVariants} className="mb-12">
-        <h1 className="text-4xl md:text-6xl font-bold text-white mb-3 tracking-tight">
+        <h1 className="mb-3 text-4xl font-bold tracking-tight text-white md:text-6xl">
           Transfer <span className="text-[#FF5C00]">Room</span>
         </h1>
         <div className="flex flex-wrap items-center gap-3">
-          <p className="text-gray-500 text-sm">
-            Code: <span className="text-white font-mono font-bold tracking-wider">{roomId}</span>
+          <p className="text-sm text-gray-500">
+            Code: <span className="font-mono font-bold tracking-wider text-white">{roomId}</span>
           </p>
           <button
             onClick={copyToClipboard}
@@ -882,7 +887,7 @@ const Room = ({ roomId, onLeave }) => {
             title="Copy Room Code"
           >
             {copied && (
-              <span className="text-green-500 text-xs font-bold absolute -top-6 left-1/2 transform -translate-x-1/2 whitespace-nowrap bg-black/80 px-2 py-1 rounded">Copied!</span>
+              <span className="absolute px-2 py-1 text-xs font-bold text-green-500 transform -translate-x-1/2 rounded -top-6 left-1/2 whitespace-nowrap bg-black/80">Copied!</span>
             )}
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -903,7 +908,7 @@ const Room = ({ roomId, onLeave }) => {
       </motion.div>
 
       {/* Main Content Grid */}
-      <div className="grid lg:grid-cols-3 gap-8 mb-8">
+      <div className="grid gap-8 mb-8 lg:grid-cols-3">
         {/* File Drop Zone */}
         <motion.div
           variants={itemVariants}
@@ -922,8 +927,8 @@ const Room = ({ roomId, onLeave }) => {
               <svg className="w-20 h-20 mx-auto mb-6 text-[#FF5C00]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
-              <h2 className="text-3xl font-bold text-white mb-3">Drop Files Here</h2>
-              <p className="text-gray-500 text-sm mb-8">or click to browse</p>
+              <h2 className="mb-3 text-3xl font-bold text-white">Drop Files Here</h2>
+              <p className="mb-8 text-sm text-gray-500">or click to browse</p>
             </div>
           ) : (
             <div className="w-full space-y-3">
@@ -932,7 +937,7 @@ const Room = ({ roomId, onLeave }) => {
                   <motion.div
                     key={file.id}
                     initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-                    className="bg-black/40 border border-white/10 rounded-lg p-4 flex items-center gap-4"
+                    className="flex items-center gap-4 p-4 border rounded-lg bg-black/40 border-white/10"
                     onClick={(e) => e.stopPropagation()}
                   >
                     <span className="text-2xl">{getFileIcon(file.name)}</span>
@@ -944,7 +949,7 @@ const Room = ({ roomId, onLeave }) => {
                       )}
                     </div>
                     <div className="flex items-center gap-3">
-                      <div className="w-24 h-1 bg-black/60 border border-white/10 rounded-full overflow-hidden">
+                      <div className="w-24 h-1 overflow-hidden border rounded-full bg-black/60 border-white/10">
                         <motion.div
                           className="h-full bg-gradient-to-r from-[#FF5C00] to-[#FF8C42]"
                           initial={{ width: 0 }} animate={{ width: `${file.progress}%` }} transition={{ duration: 0.3 }}
@@ -964,7 +969,7 @@ const Room = ({ roomId, onLeave }) => {
                         </button>
                       )}
                       {file.status !== 'Sending' && (
-                        <button onClick={(e) => { e.stopPropagation(); removeFile(file.id); }} className="ml-1 p-1 text-gray-600 hover:text-red-400 transition-colors rounded" title="Remove">
+                        <button onClick={(e) => { e.stopPropagation(); removeFile(file.id); }} className="p-1 ml-1 text-gray-600 transition-colors rounded hover:text-red-400" title="Remove">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                           </svg>
@@ -981,13 +986,13 @@ const Room = ({ roomId, onLeave }) => {
         {/* Connection Status Panel */}
         <motion.div
           variants={itemVariants}
-          className="backdrop-blur-2xl rounded-lg border border-white/5 p-8"
+          className="p-8 border rounded-lg backdrop-blur-2xl border-white/5"
           style={{
             background: 'linear-gradient(135deg, rgba(26, 26, 26, 0.8) 0%, rgba(15, 15, 15, 0.9) 100%)',
             boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05)'
           }}
         >
-          <h3 className="text-2xl font-bold text-white mb-6">P2P Mesh Status</h3>
+          <h3 className="mb-6 text-2xl font-bold text-white">P2P Mesh Status</h3>
 
           <div className="space-y-4">
             <div className="flex items-center gap-3">
@@ -1003,7 +1008,7 @@ const Room = ({ roomId, onLeave }) => {
                   <span className="w-2.5 h-2.5 rounded-full bg-green-500" style={{ boxShadow: '0 0 8px rgba(34, 197, 94, 0.6)' }} />
                 )}
               </div>
-              <span className="text-gray-300 text-sm font-medium">
+              <span className="text-sm font-medium text-gray-300">
                 {connectionStatus === 'connecting'
                   ? 'Connecting to server...'
                   : connectionStatus === 'failed'
@@ -1012,14 +1017,14 @@ const Room = ({ roomId, onLeave }) => {
               </span>
             </div>
 
-            <div className="border-t border-white/5 pt-4">
-              <p className="text-gray-500 text-xs mb-2 uppercase tracking-widest">Transport</p>
-              <p className="text-white font-mono text-sm">SCTP/UDP WebRTC</p>
+            <div className="pt-4 border-t border-white/5">
+              <p className="mb-2 text-xs tracking-widest text-gray-500 uppercase">Transport</p>
+              <p className="font-mono text-sm text-white">SCTP/UDP WebRTC</p>
             </div>
 
-            <div className="border-t border-white/5 pt-4">
-              <p className="text-gray-500 text-xs mb-2 uppercase tracking-widest">Peers</p>
-              <p className="text-white font-mono text-sm">
+            <div className="pt-4 border-t border-white/5">
+              <p className="mb-2 text-xs tracking-widest text-gray-500 uppercase">Peers</p>
+              <p className="font-mono text-sm text-white">
                 {activePeers.filter(p => p.status === 'connected').length} Connected Nodes
               </p>
               {activePeers.length > MESH_SOFT_PEER_LIMIT && (
@@ -1030,9 +1035,9 @@ const Room = ({ roomId, onLeave }) => {
 
           {/* Active Peers Selector */}
           {activePeers.length > 0 && (
-            <div className="border-t border-white/5 pt-6 mt-6">
+            <div className="pt-6 mt-6 border-t border-white/5">
               <div className="flex items-center justify-between mb-4">
-                <h4 className="text-white font-medium text-sm">Send to Peers:</h4>
+                <h4 className="text-sm font-medium text-white">Send to Peers:</h4>
                 <button
                   onClick={() => setSelectedPeers(new Set(activePeers.filter(p => p.status === 'connected').map(p => p.id)))}
                   className="text-xs text-[#FF5C00] hover:text-[#FF8C42] transition-colors bg-[#FF5C00]/10 px-2 py-1 rounded"
@@ -1041,13 +1046,13 @@ const Room = ({ roomId, onLeave }) => {
                 </button>
               </div>
 
-              <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
+              <div className="pr-2 space-y-3 overflow-y-auto max-h-48 custom-scrollbar">
                 {activePeers.map(p => (
-                  <label key={p.id} className="flex items-center gap-3 cursor-pointer group p-2 rounded hover:bg-white/5 transition-colors">
+                  <label key={p.id} className="flex items-center gap-3 p-2 transition-colors rounded cursor-pointer group hover:bg-white/5">
                     <div className="relative flex items-center justify-center">
                       <input
                         type="checkbox"
-                        className="peer hidden"
+                        className="hidden peer"
                         checked={selectedPeers.has(p.id)}
                         onChange={() => {
                           setSelectedPeers(prev => {
@@ -1083,17 +1088,17 @@ const Room = ({ roomId, onLeave }) => {
       <motion.div
         variants={itemVariants}
         ref={logContainerRef}
-        className="backdrop-blur-2xl border border-white/5 rounded-lg p-6 h-48 overflow-y-auto font-mono text-sm"
+        className="h-48 p-6 overflow-y-auto font-mono text-sm border rounded-lg backdrop-blur-2xl border-white/5"
         style={{
           background: 'rgba(0, 0, 0, 0.8)',
           boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
         }}
       >
-        <div className="flex items-center gap-2 mb-4 pb-2 border-b border-white/5">
+        <div className="flex items-center gap-2 pb-2 mb-4 border-b border-white/5">
           <div className="w-2.5 h-2.5 rounded-full bg-[#FF5C00]" style={{ boxShadow: '0 0 6px rgba(255, 92, 0, 0.6)' }} />
           <div className="w-2.5 h-2.5 rounded-full bg-[#FF8C42]" style={{ boxShadow: '0 0 6px rgba(255, 140, 66, 0.6)' }} />
           <div className="w-2.5 h-2.5 rounded-full bg-green-500" style={{ boxShadow: '0 0 6px rgba(34, 197, 94, 0.6)' }} />
-          <span className="ml-2 text-gray-500 text-xs uppercase tracking-widest">Signaling Log</span>
+          <span className="ml-2 text-xs tracking-widest text-gray-500 uppercase">Signaling Log</span>
         </div>
         {logs.map((log, i) => (
           <motion.div

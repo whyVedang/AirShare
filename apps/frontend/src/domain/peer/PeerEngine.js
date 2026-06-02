@@ -6,6 +6,131 @@
  * 
  * This is pure domain logic - no dependencies
  */
+class SimpleEmitter {
+   constructor() { this._listeners = new Map(); }
+   on(event, fn) { if (!this._listeners.has(event)) this._listeners.set(event, new Set()); this._listeners.get(event).add(fn); return this; }
+   off(event, fn) { this._listeners.get(event)?.delete(fn); return this; }
+   emit(event, ...args) { this._listeners.get(event)?.forEach((fn) => fn(...args)); }
+ }
+export class SFUPeerEngine extends SimpleEmitter {
+    constructor(signalingClient) {
+        super();
+        this.signaling = signalingClient;
+        this.serverConnection = null;
+        this.dataChannel = null;
+        this.isHost = false;
+        
+        this._setupSignalingListeners();
+    }
+
+    _setupSignalingListeners() {
+        // Listen for the Server responding to the Host
+        this.signaling.on('server-answer', async (payload) => {
+            if (this.isHost && this.serverConnection) {
+                const rtcSessionDescription = new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: payload.sdp
+                });
+                await this.serverConnection.setRemoteDescription(rtcSessionDescription);
+            }
+        });
+
+        // Listen for the Server initiating contact with the Receiver
+        this.signaling.on('server-offer', async (payload) => {
+            if (!this.isHost) {
+                await this.handleServerOffer(payload.sdp);
+            }
+        });
+
+        this.signaling.on('server-ice-candidate', (payload) => {
+            if (this.serverConnection) {
+                this.serverConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+            }
+        });
+    }
+
+    _createPeerConnection(roomID) {
+        const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+        });
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                this.signaling.sendIceCandidate(roomID, 'server', event.candidate);
+            }
+        };
+
+        pc.onconnectionstatechange = () => {
+            this.emit('connection-state', pc.connectionState);
+        };
+
+        return pc;
+    }
+
+    // --- HOST LOGIC (Sender) ---
+    async initAsHost(roomID) {
+        this.isHost = true;
+        this.serverConnection = this._createPeerConnection(roomID);
+
+        // Host creates the channel that uploads to the server
+        this.dataChannel = this.serverConnection.createDataChannel('file-transfer');
+        this._setupDataChannel(this.dataChannel);
+
+        const offer = await this.serverConnection.createOffer();
+        await this.serverConnection.setLocalDescription(offer);
+
+        this.signaling.sendHostOffer(roomID, offer.sdp);
+    }
+
+    // --- RECEIVER LOGIC (Downloader) ---
+    requestServerConnection(roomID) {
+        this.isHost = false;
+        // Tell the server we want an offer
+        this.signaling.sendReceiverRequest(roomID); 
+    }
+
+    async handleServerOffer(serverSdp) {
+        this.serverConnection = this._createPeerConnection(this.signaling.roomID);
+
+        // Receiver listens for the server to open the downstream channel
+        this.serverConnection.ondatachannel = (event) => {
+            this.dataChannel = event.channel;
+            this._setupDataChannel(this.dataChannel);
+        };
+
+        await this.serverConnection.setRemoteDescription(
+            new RTCSessionDescription({ type: 'offer', sdp: serverSdp })
+        );
+
+        const answer = await this.serverConnection.createAnswer();
+        await this.serverConnection.setLocalDescription(answer);
+
+        this.signaling.sendReceiverAnswer(this.signaling.roomID, answer.sdp);
+    }
+
+    _setupDataChannel(channel) {
+        channel.binaryType = 'arraybuffer';
+        
+        channel.onopen = () => this.emit('channel-open');
+        channel.onclose = () => this.emit('channel-closed');
+        
+        channel.onmessage = (event) => {
+            // Forward chunks to the ChunkManager/TransferController
+            this.emit('data-received', event.data);
+        };
+    }
+
+    sendData(chunk) {
+        if (this.dataChannel && this.dataChannel.readyState === 'open') {
+            this.dataChannel.send(chunk);
+        }
+    }
+
+    disconnect() {
+        if (this.dataChannel) this.dataChannel.close();
+        if (this.serverConnection) this.serverConnection.close();
+    }
+}
 
 class PeerEngine {
   constructor(config = {}) {
