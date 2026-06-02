@@ -10,6 +10,8 @@ class ChunkManager {
     const maxBuffer = 256 * 1024;
     channel.bufferedAmountLowThreshold = maxBuffer / 2;
 
+    this.ensureChannelOpen(channel);
+
     // 1. Send Metadata
     channel.send(JSON.stringify({
       type: "file-meta",
@@ -34,6 +36,8 @@ class ChunkManager {
         await this.waitForBufferLow(channel);
       }
 
+      this.ensureChannelOpen(channel);
+
       // Slice & Prepare Binary Packet
       const blob = file.slice(offset, offset + chunkSize);
       const arrayBuffer = await blob.arrayBuffer();
@@ -54,16 +58,56 @@ class ChunkManager {
     }
 
     // 3. Signal End
+    this.ensureChannelOpen(channel);
     channel.send(JSON.stringify({ type: "file-end", totalChunks: chunkIndex }));
   }
 
+  ensureChannelOpen(channel) {
+    if (!channel || channel.readyState !== "open") {
+      throw new Error(`Data channel is not open: ${channel?.readyState || "missing"}`);
+    }
+  }
+
   async waitForBufferLow(channel) {
-    return new Promise(resolve => {
-      const handler = () => {
-        channel.removeEventListener("bufferedamountlow", handler);
+    this.ensureChannelOpen(channel);
+
+    if (channel.bufferedAmount < channel.bufferedAmountLowThreshold) {
+      return;
+    }
+
+    return new Promise((resolve, reject) => {
+      let timeoutId;
+
+      const cleanup = () => {
+        clearTimeout(timeoutId);
+        channel.removeEventListener("bufferedamountlow", onBufferLow);
+        channel.removeEventListener("close", onClose);
+        channel.removeEventListener("error", onError);
+      };
+
+      const onBufferLow = () => {
+        cleanup();
         resolve();
       };
-      channel.addEventListener("bufferedamountlow", handler);
+
+      const onClose = () => {
+        cleanup();
+        reject(new Error(`Data channel closed while sending: ${channel.readyState}`));
+      };
+
+      const onError = () => {
+        cleanup();
+        reject(new Error("Data channel error while sending"));
+      };
+
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error("Timed out waiting for data channel buffer to drain"));
+      }, 120000);
+
+      channel.addEventListener("bufferedamountlow", onBufferLow);
+      channel.addEventListener("close", onClose);
+      channel.addEventListener("error", onError);
     });
   }
 

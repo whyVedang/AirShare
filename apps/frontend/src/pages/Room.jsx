@@ -5,6 +5,8 @@ import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
 import JSZip from 'jszip';
 
+const MESH_SEND_BATCH_SIZE = 3;
+
 const Room = ({ roomId, onLeave }) => {
   const clientRef = useRef(null);
 
@@ -299,6 +301,48 @@ const Room = ({ roomId, onLeave }) => {
     }
   };
 
+  const sendToTargetsInBatches = async (file, targets, fileId) => {
+    const results = [];
+    const totalTargets = targets.length;
+    const totalBatches = Math.ceil(totalTargets / MESH_SEND_BATCH_SIZE);
+
+    addLog(`Mesh batching: ${totalTargets} peer(s), ${MESH_SEND_BATCH_SIZE} at a time`);
+
+    for (let i = 0; i < totalTargets; i += MESH_SEND_BATCH_SIZE) {
+      const batch = targets.slice(i, i + MESH_SEND_BATCH_SIZE);
+      const batchNumber = Math.floor(i / MESH_SEND_BATCH_SIZE) + 1;
+
+      addLog(`Sending batch ${batchNumber}/${totalBatches}: ${batch.length} peer(s)`);
+
+      const settled = await Promise.allSettled(
+        batch.map(({ controller }) => controller.send(file))
+      );
+
+      settled.forEach((result, index) => {
+        results.push({
+          peerID: batch[index].peerID,
+          status: result.status,
+          reason: result.reason
+        });
+      });
+
+      const completedCount = results.filter(result => result.status === 'fulfilled').length;
+      const batchFailedCount = settled.filter(result => result.status === 'rejected').length;
+
+      setFiles(prev => prev.map(f =>
+        f.id === fileId
+          ? { ...f, progress: Math.min(99, Math.round((completedCount / totalTargets) * 100)) }
+          : f
+      ));
+
+      if (batchFailedCount > 0) {
+        addLog(`Batch ${batchNumber}/${totalBatches}: ${batchFailedCount} peer(s) failed`);
+      }
+    }
+
+    return results;
+  };
+
   const pumpQueue = async () => {
     isTransferringRef.current = true;
 
@@ -307,7 +351,9 @@ const Room = ({ roomId, onLeave }) => {
       const rawFile = fileData.rawFile;
       const targets = fileData.targets;
 
-      const tcTargets = targets.map(id => transfersRef.current.get(id)).filter(Boolean);
+      const tcTargets = targets
+        .map(peerID => ({ peerID, controller: transfersRef.current.get(peerID) }))
+        .filter(({ controller }) => Boolean(controller));
 
       if (tcTargets.length === 0) {
         addLog(`Failed: Peers disconnected before send`);
@@ -320,18 +366,31 @@ const Room = ({ roomId, onLeave }) => {
       setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Sending' } : f));
 
       try {
-        const results = await Promise.allSettled(tcTargets.map(tc => tc.send(rawFile)));
+        const results = await sendToTargetsInBatches(rawFile, tcTargets, fileData.id);
+        const successfulTransfers = results.filter(r => r.status === 'fulfilled').length;
+        const failedTransfers = results.length - successfulTransfers;
 
-        // If all of them rejected, then throw to hit the catch block
-        if (results.every(r => r.status === 'rejected')) {
+        if (successfulTransfers === 0) {
           throw new Error('All peers failed to receive');
         }
 
         const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
-        addLog(`Done: ${rawFile.name} in ${elapsedSec}s`);
+        if (failedTransfers > 0) {
+          addLog(`Partial: ${rawFile.name} reached ${successfulTransfers}/${results.length} peer(s) in ${elapsedSec}s`);
+        } else {
+          addLog(`Done: ${rawFile.name} in ${elapsedSec}s`);
+        }
 
         setFiles(prev => prev.map(f =>
-          f.id === fileData.id ? { ...f, status: `Done (${elapsedSec}s)`, progress: 100 } : f
+          f.id === fileData.id
+            ? {
+              ...f,
+              status: failedTransfers > 0
+                ? `Partial (${successfulTransfers}/${results.length})`
+                : `Done (${elapsedSec}s)`,
+              progress: Math.round((successfulTransfers / results.length) * 100)
+            }
+            : f
         ));
       } catch (err) {
         addLog(`Transfer failed: ${rawFile.name}`);
