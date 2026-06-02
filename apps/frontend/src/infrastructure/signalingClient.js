@@ -181,6 +181,7 @@ class SignalingClient {
     const candidate = hasExplicitRoom ? maybeCandidate : targetPeerIDOrCandidate;
 
     this._send('ice-candidate', { roomID, targetPeerID, candidate });
+  }
 
   on(event, handler) {
     if (Object.prototype.hasOwnProperty.call(this.handlers, event)) {

@@ -6,11 +6,6 @@ import TransferController from "../domain/transfer/TransferController";
 import { createTransferId } from "../domain/transfer/transferProtocol";
 import JSZip from 'jszip';
 
-
-import { CryptoService } from "../domain/security/CryptoService.js";
-import { OPFSService } from "../domain/transfer/OPFS.js";
-import ChunkManager from "../domain/transfer/ChunkManager.js";
-
 const MESH_SEND_BATCH_SIZE = 3;
 const MESH_SOFT_PEER_LIMIT = 16;
 const RECEIVER_AUTO_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
