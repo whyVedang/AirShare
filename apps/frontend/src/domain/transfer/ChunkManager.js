@@ -317,6 +317,7 @@ class ChunkManager {
     if (this.useOPFS && canUseOPFS() && !this.opfsService) {
       this.opfsService = new OPFSService();
       await this.opfsService.initFile(metadata.name, {
+        transferId: metadata.transferId,
         keepExistingData: Boolean(metadata.startOffset)
       });
     }

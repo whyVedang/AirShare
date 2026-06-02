@@ -89,8 +89,8 @@ async function importPlaywright() {
   try {
     return await import("playwright");
   } catch {
-    const fallback = "C:/Users/athar/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/index.mjs";
-    if (existsSync(fallback)) {
+    const fallback = process.env.PLAYWRIGHT_IMPORT_PATH;
+    if (fallback && existsSync(fallback)) {
       return await import(pathToFileURL(fallback).href);
     }
     throw new Error("Playwright is not available. Run: npm install -D playwright && npx playwright install chromium");

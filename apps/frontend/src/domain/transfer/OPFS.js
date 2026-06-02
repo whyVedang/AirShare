@@ -4,10 +4,13 @@ export class OPFSService {
         this.writableStream = null;
     }
 
-    async initFile(fileName, { keepExistingData = false } = {}) {
+    async initFile(fileName, { transferId, keepExistingData = false } = {}) {
         const safeName = fileName.replace(/[\\/:*?"<>|]/g, "_");
+        const safeTransferId = (transferId || crypto.randomUUID()).replace(/[^a-z0-9-]/gi, "_");
         const rootDir = await navigator.storage.getDirectory();
-        this.fileHandle = await rootDir.getFileHandle(safeName, { create: true });
+        const transferRoot = await rootDir.getDirectoryHandle("airshare-transfers", { create: true });
+        const transferDir = await transferRoot.getDirectoryHandle(safeTransferId, { create: true });
+        this.fileHandle = await transferDir.getFileHandle(safeName, { create: true });
         this.writableStream = await this.fileHandle.createWritable({ keepExistingData });
     }
 

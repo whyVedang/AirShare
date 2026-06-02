@@ -204,6 +204,7 @@ class TransferController {
             );
 
             this.localIntegrity.delete(transferId);
+            this.remoteProgress.delete(transferId);
             return result;
         } catch (error) {
             if (controller.signal.aborted) {

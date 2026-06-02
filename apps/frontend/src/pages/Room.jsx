@@ -585,7 +585,7 @@ const Room = ({ roomId, onLeave }) => {
       try {
         updatePeerTransfer(fileData.id, target.peerID, {
           status: resumeOffset > 0 ? 'Resuming' : 'Sending',
-          progress: Math.round((resumeOffset / file.size) * 100)
+          progress: file.size ? Math.round((resumeOffset / file.size) * 100) : 0
         });
 
         registerActiveController(fileData.id, target.controller);
