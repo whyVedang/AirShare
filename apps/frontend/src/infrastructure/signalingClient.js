@@ -3,8 +3,8 @@ class SignalingClient {
     this.serverUrl = serverUrl;
     this.socket = null;
     this.isConnected = false;
-    this.roomId = null;
-    this.peerId = null;
+    this.roomID = null;
+    this.peerID = null;
     this.handlers = {
       onRoomJoined: null,
       onPeerJoined: null,
@@ -28,9 +28,9 @@ class SignalingClient {
     return new Promise((resolve, reject) => {
       if (this.isConnected) return resolve();
 
-      // Generate a stable peerId that survives reconnects within the same session
-      if (!this.peerId) {
-        this.peerId = crypto.randomUUID();
+      // Generate a stable peerID that survives reconnects within the same session
+      if (!this.peerID) {
+        this.peerID = crypto.randomUUID();
       }
 
       this.socket = new WebSocket(this.serverUrl);
@@ -85,11 +85,11 @@ class SignalingClient {
         await this.connect();
 
         // After reconnecting, automatically re-join the room we were in
-        if (this.roomId) {
-          this.joinRoom(this.roomId);
+        if (this.roomID) {
+          this.joinRoom(this.roomID);
         }
 
-        this._triggerHandler('onReconnected', { peerId: this.peerId });
+        this._triggerHandler('onReconnected', { peerID: this.peerID });
       } catch (err) {
         // _scheduleReconnect will be triggered again via the socket.onclose handler
         console.warn('[WS] Reconnect attempt failed:', err);
@@ -139,16 +139,16 @@ class SignalingClient {
   }
 
   joinRoom(roomID) {
-    this.roomId = roomID;
+    this.roomID = roomID;
     this._send('join-room', {
       roomID,
-      peerID: this.peerId
+      peerID: this.peerID
     });
   }
 
   sendOffer(targetPeerID, offer) {
     this._send('offer', {
-      roomID: this.roomId,
+      roomID: this.roomID,
       targetPeerID,
       sdp: offer
     });
@@ -156,7 +156,7 @@ class SignalingClient {
 
   sendAnswer(targetPeerID, answer) {
     this._send('answer', {
-      roomID: this.roomId,
+      roomID: this.roomID,
       targetPeerID,
       sdp: answer
     });
@@ -189,15 +189,6 @@ class SignalingClient {
     }
   }
 
-  // --- MESH & SFU SIGNALING METHODS ---
-
-  sendOffer(targetPeerID, offer) {
-    this._send('offer', { roomID: this.roomId, targetPeerID, sdp: offer });
-  }
-
-  sendAnswer(targetPeerID, answer) {
-    this._send('answer', { roomID: this.roomId, targetPeerID, sdp: answer });
-  }
 
   sendIceCandidate(roomID, targetPeerID, candidate) {
     this._send('ice-candidate', { roomID, targetPeerID, candidate });

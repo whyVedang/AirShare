@@ -10,7 +10,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
   const handleCreateRoom = async () => {
     const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/rooms`, {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/room`, {
         method: "POST",
         headers: { "Content-Type": "application/json" }
       });

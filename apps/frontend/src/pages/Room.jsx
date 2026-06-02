@@ -4,7 +4,7 @@ import SignalingClient from "../infrastructure/signalingClient";
 import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
 import JSZip from 'jszip';
-import { CryptoService } from "../security/CryptoService.js";
+import { CryptoService } from "../domain/security/CryptoService.js";
 import { OPFSService } from "../domain/transfer/OPFS.js";
 import ChunkManager from "../domain/transfer/ChunkManager.js";
 
