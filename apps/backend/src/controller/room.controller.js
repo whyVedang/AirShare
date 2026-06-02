@@ -14,7 +14,7 @@ export const createRoom = async (req, res, next) => {
     try {
         let roomID;
         do {
-            roomID = crypto.randomBytes(3).toString("hex").toUpperCase();
+            roomID = crypto.randomBytes(4).toString("hex").toUpperCase();
         } while (await Services.getRoom(roomID));
 
         await Services.createRoom(roomID);

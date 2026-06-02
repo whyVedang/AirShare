@@ -43,8 +43,8 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
 
     if (isJoining || !onJoinRoom) return;
 
-    if (!/^[A-Z0-9]{6}$/.test(normalizedRoomID)) {
-      setError("Enter a valid 6-character room code.");
+    if (!/^[A-Z0-9]{8}$/.test(normalizedRoomID)) {
+      setError("Enter a valid 8-character room code.");
       return;
     }
 
@@ -364,12 +364,12 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
                   value={roomId}
                   onChange={(e) => setRoomId(e.target.value.replace(/[^a-z0-9]/gi, '').toUpperCase())}
                   onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
-                  placeholder="ABC123"
+                  placeholder="ABCD1234"
                   className="w-full py-4 px-6 bg-black/60 border border-white/10 text-white rounded-lg font-mono text-2xl text-center placeholder:text-gray-700 focus:outline-none focus:border-[#FF5C00]/50 focus:ring-2 focus:ring-[#FF5C00]/20 transition-all uppercase tracking-widest"
                   style={{
                     boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
                   }}
-                  maxLength={6}
+                  maxLength={8}
                 />
                 {error && (
                   <p className="mt-3 text-sm text-red-400 text-center">

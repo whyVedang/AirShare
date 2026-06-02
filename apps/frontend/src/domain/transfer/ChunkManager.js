@@ -1,7 +1,19 @@
 import { OPFSService } from "./OPFS.js";
+import {
+  CHUNK_PROTOCOL_VERSION,
+  HASH_BYTES,
+  HASH_ALGORITHM,
+  PACKET_HEADER_BYTES,
+  bytesToHex,
+  createHashTreeHex,
+  createTransferId,
+  hexToBytes,
+  sha256Bytes,
+  timingSafeHexEqual,
+  toArrayBuffer
+} from "./transferProtocol.js";
 
-const PACKET_HEADER_BYTES = 12;
-const CHUNK_PROTOCOL_VERSION = 2;
+const LEGACY_PACKET_HEADER_BYTES = 12;
 
 const canUseOPFS = () => (
   typeof navigator !== "undefined" &&
@@ -11,6 +23,7 @@ const canUseOPFS = () => (
 class ChunkManager {
   constructor({ useOPFS = true } = {}) {
     this.receivedChunks = new Map();
+    this.receivedChunkHashes = new Map();
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
@@ -18,62 +31,94 @@ class ChunkManager {
     this.opfsService = null;
   }
 
-  async sendFile(file, channel, congestionController, latencyController, onProgress) {
+  async sendFile(file, channel, congestionController, latencyController, onProgress, options = {}) {
     const maxBuffer = 256 * 1024;
+    const transferId = options.transferId || createTransferId();
+    const startOffset = Math.max(0, Math.min(options.startOffset || 0, file.size));
+    const chunkHashesByOffset = options.chunkHashesByOffset || new Map();
+
     channel.bufferedAmountLowThreshold = maxBuffer / 2;
-
     this.ensureChannelOpen(channel);
+    this.throwIfAborted(options.signal);
 
-    // 1. Send Metadata
     channel.send(JSON.stringify({
       type: "file-meta",
       metadata: {
         name: file.name,
         size: file.size,
-        type: file.type || 'application/octet-stream',
-        chunkProtocol: CHUNK_PROTOCOL_VERSION
+        type: file.type || "application/octet-stream",
+        chunkProtocol: CHUNK_PROTOCOL_VERSION,
+        hashAlgorithm: HASH_ALGORITHM,
+        transferId,
+        startOffset
       }
     }));
 
-    let offset = 0;
+    let offset = startOffset;
     let chunkIndex = 0;
 
     while (offset < file.size) {
-      // Congestion Control
+      this.throwIfAborted(options.signal);
+
       const avgRTT = latencyController.getAverageRTT();
       congestionController.update(avgRTT, channel.bufferedAmount);
       const chunkSize = congestionController.getChunkSize();
 
-      // Backpressure
       if (channel.bufferedAmount >= maxBuffer) {
-        await this.waitForBufferLow(channel);
+        await this.waitForBufferLow(channel, options.signal);
       }
 
       this.ensureChannelOpen(channel);
+      this.throwIfAborted(options.signal);
 
-      // Slice & Prepare Binary Packet
       const blob = file.slice(offset, offset + chunkSize);
       const arrayBuffer = await blob.arrayBuffer();
+      const chunkBytes = new Uint8Array(arrayBuffer);
+      const chunkHash = await sha256Bytes(chunkBytes);
 
-      const packet = new Uint8Array(PACKET_HEADER_BYTES + arrayBuffer.byteLength);
-      const view = new DataView(packet.buffer);
-      view.setUint32(0, chunkIndex, true);
-      view.setBigUint64(4, BigInt(offset), true);
-      packet.set(new Uint8Array(arrayBuffer), PACKET_HEADER_BYTES);
-
+      chunkHashesByOffset.set(offset, chunkHash);
+      const packet = this.packPacket(chunkIndex, offset, chunkBytes, chunkHash);
       channel.send(packet.buffer);
 
       offset += chunkSize;
-      chunkIndex++;
+      chunkIndex += 1;
 
       if (onProgress) {
         onProgress(Math.min(100, Math.round((offset / file.size) * 100)));
       }
     }
 
-    // 3. Signal End
+    const fileHash = await createHashTreeHex(chunkHashesByOffset);
+
     this.ensureChannelOpen(channel);
-    channel.send(JSON.stringify({ type: "file-end", totalChunks: chunkIndex }));
+    channel.send(JSON.stringify({
+      type: "file-end",
+      transferId,
+      totalChunks: chunkIndex,
+      integrity: {
+        algorithm: HASH_ALGORITHM,
+        fileHash
+      }
+    }));
+
+    return {
+      transferId,
+      fileHash,
+      sentBytes: file.size - startOffset
+    };
+  }
+
+  packPacket(index, offset, chunkBytes, chunkHash) {
+    const packet = new Uint8Array(PACKET_HEADER_BYTES + chunkBytes.byteLength);
+    const view = new DataView(packet.buffer);
+
+    view.setUint32(0, index, true);
+    view.setBigUint64(4, BigInt(offset), true);
+    view.setUint32(12, CHUNK_PROTOCOL_VERSION, true);
+    packet.set(chunkHash, 16);
+    packet.set(chunkBytes, PACKET_HEADER_BYTES);
+
+    return packet;
   }
 
   ensureChannelOpen(channel) {
@@ -82,7 +127,13 @@ class ChunkManager {
     }
   }
 
-  async waitForBufferLow(channel) {
+  throwIfAborted(signal) {
+    if (signal?.aborted) {
+      throw new DOMException("Transfer cancelled", "AbortError");
+    }
+  }
+
+  async waitForBufferLow(channel, signal) {
     this.ensureChannelOpen(channel);
 
     if (channel.bufferedAmount < channel.bufferedAmountLowThreshold) {
@@ -94,6 +145,7 @@ class ChunkManager {
 
       const cleanup = () => {
         clearTimeout(timeoutId);
+        signal?.removeEventListener("abort", onAbort);
         channel.removeEventListener("bufferedamountlow", onBufferLow);
         channel.removeEventListener("close", onClose);
         channel.removeEventListener("error", onError);
@@ -114,11 +166,17 @@ class ChunkManager {
         reject(new Error("Data channel error while sending"));
       };
 
+      const onAbort = () => {
+        cleanup();
+        reject(new DOMException("Transfer cancelled", "AbortError"));
+      };
+
       timeoutId = setTimeout(() => {
         cleanup();
         reject(new Error("Timed out waiting for data channel buffer to drain"));
       }, 120000);
 
+      signal?.addEventListener("abort", onAbort, { once: true });
       channel.addEventListener("bufferedamountlow", onBufferLow);
       channel.addEventListener("close", onClose);
       channel.addEventListener("error", onError);
@@ -127,27 +185,32 @@ class ChunkManager {
 
   async handleIncomingData(data) {
     if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-      const packet = this.unpackPacket(this.toArrayBuffer(data));
+      const packet = this.unpackPacket(toArrayBuffer(data));
       if (!packet) return null;
 
-      if (this.opfsService) {
-        await this.opfsService.writeChunk(packet.chunkData, packet.offset);
-      } else {
-        this.receivedChunks.set(packet.index, packet.chunkData);
-      }
+      await this.verifyPacket(packet);
+      await this.storePacket(packet);
 
-      this.receivedBytes += packet.chunkData.byteLength;
-      return { type: 'progress', value: this.getReceiverProgress() };
-    } 
-    
+      return {
+        type: "progress",
+        value: this.getReceiverProgress(),
+        transferId: this.fileMetadata?.transferId,
+        receivedBytes: this.receivedBytes
+      };
+    }
+
     const msg = JSON.parse(data);
     if (msg.type === "file-meta") {
       await this.prepareReceive(msg.metadata);
-      return { type: 'meta', value: msg.metadata };
+      return { type: "meta", value: msg.metadata };
     }
     if (msg.type === "file-end") {
       this.totalChunks = msg.totalChunks;
-      return this.completeReceive();
+      return this.completeReceive(msg.integrity);
+    }
+    if (msg.type === "transfer-cancel") {
+      await this.cancelReceive();
+      return { type: "cancelled", reason: msg.reason || "cancelled" };
     }
   }
 
@@ -160,67 +223,157 @@ class ChunkManager {
     const index = view.getUint32(0, true);
 
     if (
-      this.fileMetadata?.chunkProtocol === CHUNK_PROTOCOL_VERSION &&
-      data.byteLength >= PACKET_HEADER_BYTES
+      data.byteLength >= PACKET_HEADER_BYTES &&
+      view.getUint32(12, true) === CHUNK_PROTOCOL_VERSION
+    ) {
+      const offset = Number(view.getBigUint64(4, true));
+      const chunkHash = data.slice(16, 16 + HASH_BYTES);
+      return {
+        index,
+        offset,
+        chunkHash,
+        chunkData: data.slice(PACKET_HEADER_BYTES),
+        verified: false
+      };
+    }
+
+    if (
+      this.fileMetadata?.chunkProtocol === 2 &&
+      data.byteLength >= LEGACY_PACKET_HEADER_BYTES
     ) {
       const offset = Number(view.getBigUint64(4, true));
       return {
         index,
         offset,
-        chunkData: data.slice(PACKET_HEADER_BYTES)
+        chunkData: data.slice(LEGACY_PACKET_HEADER_BYTES),
+        verified: true
       };
     }
 
     return {
       index,
       offset: this.receivedBytes,
-      chunkData: data.slice(4)
+      chunkData: data.slice(4),
+      verified: true
     };
   }
 
-  toArrayBuffer(data) {
-    if (data instanceof ArrayBuffer) {
-      return data;
+  async verifyPacket(packet) {
+    if (packet.verified || !packet.chunkHash) {
+      return;
     }
 
-    return data.buffer.slice(
-      data.byteOffset,
-      data.byteOffset + data.byteLength
-    );
+    const actualHash = await sha256Bytes(packet.chunkData);
+    const expectedHex = bytesToHex(new Uint8Array(packet.chunkHash));
+    const actualHex = bytesToHex(actualHash);
+
+    if (!timingSafeHexEqual(actualHex, expectedHex)) {
+      throw new Error(`Chunk integrity check failed at offset ${packet.offset}`);
+    }
+
+    packet.verified = true;
+    packet.verifiedHash = actualHash;
+  }
+
+  async storePacket(packet) {
+    const existingHash = this.receivedChunkHashes.get(packet.offset);
+    const hash = packet.verifiedHash || packet.chunkHash;
+    const hashHex = hash ? bytesToHex(new Uint8Array(hash)) : null;
+
+    if (existingHash) {
+      if (hashHex && existingHash !== hashHex) {
+        throw new Error(`Conflicting duplicate chunk at offset ${packet.offset}`);
+      }
+      return;
+    }
+
+    if (this.opfsService) {
+      await this.opfsService.writeChunk(packet.chunkData, packet.offset);
+    } else {
+      this.receivedChunks.set(packet.offset, packet.chunkData);
+    }
+
+    if (hashHex) {
+      this.receivedChunkHashes.set(packet.offset, hashHex);
+    }
+
+    this.receivedBytes += packet.chunkData.byteLength;
   }
 
   async prepareReceive(metadata) {
-    this.reset();
-    this.fileMetadata = metadata;
+    const isResume = (
+      metadata?.transferId &&
+      this.fileMetadata?.transferId === metadata.transferId &&
+      metadata.startOffset > 0
+    );
 
-    if (this.useOPFS && canUseOPFS()) {
+    if (!isResume) {
+      await this.reset();
+      this.fileMetadata = metadata;
+    } else {
+      this.fileMetadata = { ...this.fileMetadata, ...metadata };
+    }
+
+    if (this.useOPFS && canUseOPFS() && !this.opfsService) {
       this.opfsService = new OPFSService();
-      await this.opfsService.initFile(metadata.name);
+      await this.opfsService.initFile(metadata.name, {
+        keepExistingData: Boolean(metadata.startOffset)
+      });
     }
   }
 
-  async completeReceive() {
+  async completeReceive(integrity) {
     const filename = this.fileMetadata?.name;
+    const metadata = this.fileMetadata;
+
+    if (metadata?.size && this.receivedBytes < metadata.size) {
+      throw new Error(`Incomplete file: received ${this.receivedBytes}/${metadata.size} bytes`);
+    }
+
+    const fileHash = await this.verifyFileIntegrity(integrity);
     const file = this.opfsService
       ? await this.opfsService.finish()
       : this.assembleChunks();
 
-    this.reset();
+    await this.reset();
 
     return {
-      type: 'complete',
+      type: "complete",
       value: file,
-      filename
+      filename,
+      metadata: {
+        ...metadata,
+        integrity: {
+          algorithm: integrity?.algorithm || HASH_ALGORITHM,
+          fileHash
+        }
+      }
     };
   }
 
-  assembleChunks() {
-    const ordered = [];
-    for (let i = 0; i < this.totalChunks; i++) {
-      const chunk = this.receivedChunks.get(i);
-      if (!chunk) throw new Error(`Missing chunk ${i}`);
-      ordered.push(chunk);
+  async verifyFileIntegrity(integrity) {
+    if (!integrity?.fileHash || this.receivedChunkHashes.size === 0) {
+      return null;
     }
+
+    const hashBytesByOffset = new Map(
+      Array.from(this.receivedChunkHashes.entries())
+        .map(([offset, hashHex]) => [offset, hexToBytes(hashHex)])
+    );
+    const actualHash = await createHashTreeHex(hashBytesByOffset);
+
+    if (!timingSafeHexEqual(actualHash, integrity.fileHash)) {
+      throw new Error("File integrity check failed");
+    }
+
+    return actualHash;
+  }
+
+  assembleChunks() {
+    const ordered = Array.from(this.receivedChunks.entries())
+      .sort(([leftOffset], [rightOffset]) => Number(leftOffset) - Number(rightOffset))
+      .map(([, chunk]) => chunk);
+
     const blob = new Blob(ordered, { type: this.fileMetadata.type });
     return blob;
   }
@@ -230,12 +383,21 @@ class ChunkManager {
     return Math.min(100, Math.round((this.receivedBytes / this.fileMetadata.size) * 100));
   }
 
-  reset() {
+  async cancelReceive() {
+    await this.reset();
+  }
+
+  async reset() {
     this.receivedChunks.clear();
+    this.receivedChunkHashes.clear();
     this.fileMetadata = null;
     this.totalChunks = 0;
     this.receivedBytes = 0;
-    this.opfsService = null;
+
+    if (this.opfsService) {
+      await this.opfsService.abort();
+      this.opfsService = null;
+    }
   }
 }
 

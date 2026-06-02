@@ -3,9 +3,17 @@ import { motion, AnimatePresence } from 'framer-motion';
 import SignalingClient from "../infrastructure/signalingClient";
 import PeerEngine from "../domain/peer/PeerEngine";
 import TransferController from "../domain/transfer/TransferController";
+import { createTransferId } from "../domain/transfer/transferProtocol";
 import JSZip from 'jszip';
 
 const MESH_SEND_BATCH_SIZE = 3;
+const MESH_SOFT_PEER_LIMIT = 16;
+const RECEIVER_AUTO_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
+const RESUME_RETRY_LIMIT = 1;
+
+const getMeshBatchSize = (peerCount) => (
+  peerCount > MESH_SOFT_PEER_LIMIT ? 2 : MESH_SEND_BATCH_SIZE
+);
 
 const Room = ({ roomId, onLeave }) => {
   const clientRef = useRef(null);
@@ -29,6 +37,8 @@ const Room = ({ roomId, onLeave }) => {
 
   const fileQueueRef = useRef([]);
   const isTransferringRef = useRef(false);
+  const activeFileAbortersRef = useRef(new Map());
+  const activeFileControllersRef = useRef(new Map());
 
   const copyToClipboard = async () => {
     try {
@@ -83,6 +93,9 @@ const Room = ({ roomId, onLeave }) => {
       makingOfferRef.current.clear();
       fallbackTimersRef.current.forEach(timer => clearTimeout(timer));
       fallbackTimersRef.current.clear();
+      activeFileAbortersRef.current.forEach(controller => controller.abort('leaving-room'));
+      activeFileAbortersRef.current.clear();
+      activeFileControllersRef.current.clear();
 
       client.disconnect();
       addLog('Disconnected');
@@ -342,6 +355,99 @@ const Room = ({ roomId, onLeave }) => {
       });
     });
   };
+
+  const updatePeerTransfer = (fileId, peerID, patch) => {
+    setFiles(prev => prev.map(file => {
+      if (file.id !== fileId) return file;
+
+      return {
+        ...file,
+        peerProgress: {
+          ...(file.peerProgress || {}),
+          [peerID]: {
+            ...(file.peerProgress?.[peerID] || {}),
+            ...patch
+          }
+        }
+      };
+    }));
+  };
+
+  const registerActiveController = (fileId, controller) => {
+    const controllers = activeFileControllersRef.current.get(fileId) || new Set();
+    controllers.add(controller);
+    activeFileControllersRef.current.set(fileId, controllers);
+  };
+
+  const unregisterActiveController = (fileId, controller) => {
+    const controllers = activeFileControllersRef.current.get(fileId);
+    if (!controllers) return;
+
+    controllers.delete(controller);
+    if (controllers.size === 0) {
+      activeFileControllersRef.current.delete(fileId);
+    }
+  };
+
+  const triggerBrowserDownload = (blob, filename) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'airshare-file';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
+  const saveBlobToDisk = async (blob, filename, { preferPicker = false } = {}) => {
+    if (preferPicker && window.showSaveFilePicker && blob.stream) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename || "airshare-file"
+      });
+      const writable = await handle.createWritable();
+      await blob.stream().pipeTo(writable);
+      return;
+    }
+
+    triggerBrowserDownload(blob, filename);
+  };
+
+  const handleReceivedFile = async (blob, filename, peerID, metadata) => {
+    addLog(`Received file: ${filename}`);
+    if (metadata?.integrity?.fileHash) {
+      addLog(`Verified SHA-256 tree: ${metadata.integrity.fileHash.slice(0, 12)}...`);
+    }
+
+    if (blob.size <= RECEIVER_AUTO_DOWNLOAD_LIMIT) {
+      await saveBlobToDisk(blob, filename);
+      return;
+    }
+
+    setFiles(prev => [...prev, {
+      id: Date.now(),
+      name: filename || 'airshare-file',
+      size: blob.size,
+      status: 'Ready to save',
+      progress: 100,
+      receivedBlob: blob,
+      receivedFrom: peerID,
+      integrity: metadata?.integrity
+    }]);
+    addLog(`Large file saved in browser storage. Use Save to write it to disk.`);
+  };
+
+  const saveReceivedFile = async (file) => {
+    if (!file.receivedBlob) return;
+
+    try {
+      await saveBlobToDisk(file.receivedBlob, file.name, { preferPicker: true });
+      setFiles(prev => prev.map(item => item.id === file.id ? { ...item, status: 'Saved' } : item));
+    } catch (err) {
+      addLog(`Save failed: ${file.name}`);
+    }
+  };
+
   const setupPeer = (peer, targetPeerID) => {
     const client = clientRef.current;
 
@@ -364,26 +470,33 @@ const Room = ({ roomId, onLeave }) => {
 
       const tc = new TransferController(
         (progress) => {
-          setFiles(prev => prev.map(f => f.status === 'Sending' ? { ...f, progress } : f));
+          addLog(`Receiving from ${targetPeerID.substring(0, 8)}: ${progress}%`);
         },
-        (blob, filename) => {
-          addLog(`Received file: ${filename}`);
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = filename || 'airshare-file';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(url), 0);
+        (blob, filename, metadata) => {
+          handleReceivedFile(blob, filename, targetPeerID, metadata)
+            .catch((error) => addLog(`Save preparation failed: ${error.message || 'unknown error'}`));
         },
         (avgLatency) => {
           setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, latency: avgLatency } : p));
+        },
+        (error) => {
+          if (error?.name === 'AbortError') {
+            addLog(`Transfer cancelled with ${targetPeerID.substring(0, 8)}`);
+            return;
+          }
+          addLog(`Transfer error with ${targetPeerID.substring(0, 8)}: ${error.message || 'unknown error'}`);
         }
       );
 
       tc.attachChannel(channel);
       transfersRef.current.set(targetPeerID, tc);
+    });
+
+    peer.on('onDataChannelClose', () => {
+      const tc = transfersRef.current.get(targetPeerID);
+      if (tc) tc.detachChannel();
+      transfersRef.current.delete(targetPeerID);
+      setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, status: 'disconnected' } : p));
     });
 
     peer.on('onRemoteDataChannel', (channel) => {
@@ -397,7 +510,8 @@ const Room = ({ roomId, onLeave }) => {
   const formatFileSize = (bytes) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(2)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   };
 
   const getFileIcon = (filename) => {
@@ -421,9 +535,16 @@ const Room = ({ roomId, onLeave }) => {
       return;
     }
 
-    if (selectedPeers.size === 0) {
+    const connectedSelectedPeers = Array.from(selectedPeers)
+      .filter(peerID => activePeers.some(peer => peer.id === peerID && peer.status === 'connected'));
+
+    if (connectedSelectedPeers.length === 0) {
       addLog('Cannot send: No peers selected.');
       return;
+    }
+
+    if (activePeers.length > MESH_SOFT_PEER_LIMIT) {
+      addLog(`High mesh load: ${activePeers.length} peers connected. Sending will stay batched to protect the browser.`);
     }
 
     const newFiles = filesArray.map((file, idx) => ({
@@ -433,34 +554,99 @@ const Room = ({ roomId, onLeave }) => {
       status: 'Queued',
       progress: 0,
       rawFile: file,
-      targets: Array.from(selectedPeers)
+      targets: connectedSelectedPeers,
+      transferIds: Object.fromEntries(
+        connectedSelectedPeers.map(peerID => [peerID, createTransferId()])
+      ),
+      peerProgress: Object.fromEntries(
+        connectedSelectedPeers.map(peerID => [peerID, {
+          progress: 0,
+          status: 'Queued'
+        }])
+      )
     }));
 
     setFiles(prev => [...prev, ...newFiles]);
     fileQueueRef.current.push(...newFiles);
 
-    addLog(`${newFiles.length} file(s) queued for ${selectedPeers.size} peer(s)`);
+    addLog(`${newFiles.length} file(s) queued for ${connectedSelectedPeers.length} peer(s)`);
 
     if (!isTransferringRef.current) {
       pumpQueue();
     }
   };
 
-  const sendToTargetsInBatches = async (file, targets, fileId) => {
+  const sendWithResume = async (file, target, fileData, abortController) => {
+    const transferId = fileData.transferIds[target.peerID] || createTransferId();
+
+    for (let attempt = 0; attempt <= RESUME_RETRY_LIMIT; attempt += 1) {
+      const resumeOffset = attempt === 0 ? 0 : target.controller.getResumeOffset(transferId);
+
+      try {
+        updatePeerTransfer(fileData.id, target.peerID, {
+          status: resumeOffset > 0 ? 'Resuming' : 'Sending',
+          progress: Math.round((resumeOffset / file.size) * 100)
+        });
+
+        registerActiveController(fileData.id, target.controller);
+        const result = await target.controller.send(file, {
+          transferId,
+          startOffset: resumeOffset,
+          signal: abortController.signal,
+          onProgress: (progress) => {
+            updatePeerTransfer(fileData.id, target.peerID, {
+              status: 'Sending',
+              progress
+            });
+          }
+        });
+
+        updatePeerTransfer(fileData.id, target.peerID, {
+          status: 'Done',
+          progress: 100,
+          integrity: result.fileHash
+        });
+        return result;
+      } catch (error) {
+        if (error?.name === 'AbortError' || abortController.signal.aborted) {
+          updatePeerTransfer(fileData.id, target.peerID, {
+            status: 'Cancelled'
+          });
+          throw error;
+        }
+
+        const resumeOffset = target.controller.getResumeOffset(transferId);
+        if (attempt < RESUME_RETRY_LIMIT && resumeOffset > 0 && resumeOffset < file.size) {
+          addLog(`Resuming ${file.name} for ${target.peerID.substring(0, 8)} from ${formatFileSize(resumeOffset)}`);
+          continue;
+        }
+
+        updatePeerTransfer(fileData.id, target.peerID, {
+          status: 'Failed'
+        });
+        throw error;
+      } finally {
+        unregisterActiveController(fileData.id, target.controller);
+      }
+    }
+  };
+
+  const sendToTargetsInBatches = async (file, targets, fileData, abortController) => {
     const results = [];
     const totalTargets = targets.length;
-    const totalBatches = Math.ceil(totalTargets / MESH_SEND_BATCH_SIZE);
+    const batchSize = getMeshBatchSize(totalTargets);
+    const totalBatches = Math.ceil(totalTargets / batchSize);
 
-    addLog(`Mesh batching: ${totalTargets} peer(s), ${MESH_SEND_BATCH_SIZE} at a time`);
+    addLog(`Mesh batching: ${totalTargets} peer(s), ${batchSize} at a time`);
 
-    for (let i = 0; i < totalTargets; i += MESH_SEND_BATCH_SIZE) {
-      const batch = targets.slice(i, i + MESH_SEND_BATCH_SIZE);
-      const batchNumber = Math.floor(i / MESH_SEND_BATCH_SIZE) + 1;
+    for (let i = 0; i < totalTargets; i += batchSize) {
+      const batch = targets.slice(i, i + batchSize);
+      const batchNumber = Math.floor(i / batchSize) + 1;
 
       addLog(`Sending batch ${batchNumber}/${totalBatches}: ${batch.length} peer(s)`);
 
       const settled = await Promise.allSettled(
-        batch.map(({ controller }) => controller.send(file))
+        batch.map((target) => sendWithResume(file, target, fileData, abortController))
       );
 
       settled.forEach((result, index) => {
@@ -475,10 +661,14 @@ const Room = ({ roomId, onLeave }) => {
       const batchFailedCount = settled.filter(result => result.status === 'rejected').length;
 
       setFiles(prev => prev.map(f =>
-        f.id === fileId
+        f.id === fileData.id
           ? { ...f, progress: Math.min(99, Math.round((completedCount / totalTargets) * 100)) }
           : f
       ));
+
+      if (abortController.signal.aborted) {
+        throw new DOMException('Transfer cancelled', 'AbortError');
+      }
 
       if (batchFailedCount > 0) {
         addLog(`Batch ${batchNumber}/${totalBatches}: ${batchFailedCount} peer(s) failed`);
@@ -507,13 +697,19 @@ const Room = ({ roomId, onLeave }) => {
       }
 
       const startTime = Date.now();
+      const abortController = new AbortController();
+      activeFileAbortersRef.current.set(fileData.id, abortController);
       addLog(`Sending: ${rawFile.name}...`);
       setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Sending' } : f));
 
       try {
-        const results = await sendToTargetsInBatches(rawFile, tcTargets, fileData.id);
+        const results = await sendToTargetsInBatches(rawFile, tcTargets, fileData, abortController);
         const successfulTransfers = results.filter(r => r.status === 'fulfilled').length;
         const failedTransfers = results.length - successfulTransfers;
+
+        if (abortController.signal.aborted) {
+          throw new DOMException('Transfer cancelled', 'AbortError');
+        }
 
         if (successfulTransfers === 0) {
           throw new Error('All peers failed to receive');
@@ -538,8 +734,16 @@ const Room = ({ roomId, onLeave }) => {
             : f
         ));
       } catch (err) {
-        addLog(`Transfer failed: ${rawFile.name}`);
-        setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Failed' } : f));
+        if (err?.name === 'AbortError' || abortController.signal.aborted) {
+          addLog(`Cancelled: ${rawFile.name}`);
+          setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Cancelled' } : f));
+        } else {
+          addLog(`Transfer failed: ${rawFile.name}`);
+          setFiles(prev => prev.map(f => f.id === fileData.id ? { ...f, status: 'Failed' } : f));
+        }
+      } finally {
+        activeFileAbortersRef.current.delete(fileData.id);
+        activeFileControllersRef.current.delete(fileData.id);
       }
     }
 
@@ -621,8 +825,45 @@ const Room = ({ roomId, onLeave }) => {
     e.target.value = null;
   };
 
+  const cancelFile = (id) => {
+    fileQueueRef.current = fileQueueRef.current.filter(file => file.id !== id);
+
+    const aborter = activeFileAbortersRef.current.get(id);
+    if (aborter && !aborter.signal.aborted) {
+      aborter.abort('cancelled');
+    }
+
+    const controllers = activeFileControllersRef.current.get(id);
+    controllers?.forEach(controller => controller.cancel('cancelled'));
+
+    setFiles(prev => prev.map(file => (
+      file.id === id
+        ? {
+          ...file,
+          status: 'Cancelled',
+          peerProgress: Object.fromEntries(
+            Object.entries(file.peerProgress || {}).map(([peerID, status]) => [
+              peerID,
+              status.status === 'Done' ? status : { ...status, status: 'Cancelled' }
+            ])
+          )
+        }
+        : file
+    )));
+  };
+
   const removeFile = (id) => setFiles(prev => prev.filter(f => f.id !== id));
   const handleZoneClick = () => { if (fileInputRef.current) fileInputRef.current.click(); };
+
+  const getPeerTransferSummary = (file) => {
+    const statuses = Object.values(file.peerProgress || {});
+    if (statuses.length === 0) return null;
+
+    const done = statuses.filter(status => status.status === 'Done').length;
+    const failed = statuses.filter(status => status.status === 'Failed').length;
+    const cancelled = statuses.filter(status => status.status === 'Cancelled').length;
+    return `${done}/${statuses.length} peers done${failed ? `, ${failed} failed` : ''}${cancelled ? `, ${cancelled} cancelled` : ''}`;
+  };
 
   return (
     <motion.div variants={containerVariants} initial="hidden" animate="visible" className="min-h-screen p-8 font-['Inter',sans-serif]">
@@ -698,6 +939,9 @@ const Room = ({ roomId, onLeave }) => {
                     <div className="flex-1 min-w-0">
                       <p className="text-white font-semibold truncate">{file.name}</p>
                       <p className="text-gray-500 text-xs">{formatFileSize(file.size)}</p>
+                      {getPeerTransferSummary(file) && (
+                        <p className="text-gray-500 text-[11px] mt-1">{getPeerTransferSummary(file)}</p>
+                      )}
                     </div>
                     <div className="flex items-center gap-3">
                       <div className="w-24 h-1 bg-black/60 border border-white/10 rounded-full overflow-hidden">
@@ -706,9 +950,19 @@ const Room = ({ roomId, onLeave }) => {
                           initial={{ width: 0 }} animate={{ width: `${file.progress}%` }} transition={{ duration: 0.3 }}
                         />
                       </div>
-                      <span className={`text-xs font-semibold w-24 text-right ${file.status.startsWith('Done') ? 'text-green-400' : file.status === 'Failed' ? 'text-red-400' : file.status === 'Sending' ? 'text-[#FF5C00]' : 'text-gray-400'}`}>
+                      <span className={`text-xs font-semibold w-28 text-right ${file.status.startsWith('Done') || file.status === 'Saved' || file.status === 'Ready to save' ? 'text-green-400' : file.status === 'Failed' || file.status === 'Cancelled' ? 'text-red-400' : file.status === 'Sending' ? 'text-[#FF5C00]' : 'text-gray-400'}`}>
                         {file.status}
                       </span>
+                      {file.status === 'Ready to save' && (
+                        <button onClick={(e) => { e.stopPropagation(); saveReceivedFile(file); }} className="ml-1 px-2 py-1 text-xs text-green-300 hover:text-white bg-green-500/10 rounded transition-colors" title="Save received file">
+                          Save
+                        </button>
+                      )}
+                      {file.status === 'Sending' && (
+                        <button onClick={(e) => { e.stopPropagation(); cancelFile(file.id); }} className="ml-1 px-2 py-1 text-xs text-red-300 hover:text-white bg-red-500/10 rounded transition-colors" title="Cancel transfer">
+                          Cancel
+                        </button>
+                      )}
                       {file.status !== 'Sending' && (
                         <button onClick={(e) => { e.stopPropagation(); removeFile(file.id); }} className="ml-1 p-1 text-gray-600 hover:text-red-400 transition-colors rounded" title="Remove">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -768,6 +1022,9 @@ const Room = ({ roomId, onLeave }) => {
               <p className="text-white font-mono text-sm">
                 {activePeers.filter(p => p.status === 'connected').length} Connected Nodes
               </p>
+              {activePeers.length > MESH_SOFT_PEER_LIMIT && (
+                <p className="text-yellow-500 text-xs mt-2">High mesh load; transfers are throttled in batches.</p>
+              )}
             </div>
           </div>
 
@@ -777,7 +1034,7 @@ const Room = ({ roomId, onLeave }) => {
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-white font-medium text-sm">Send to Peers:</h4>
                 <button
-                  onClick={() => setSelectedPeers(new Set(activePeers.map(p => p.id)))}
+                  onClick={() => setSelectedPeers(new Set(activePeers.filter(p => p.status === 'connected').map(p => p.id)))}
                   className="text-xs text-[#FF5C00] hover:text-[#FF8C42] transition-colors bg-[#FF5C00]/10 px-2 py-1 rounded"
                 >
                   Select All

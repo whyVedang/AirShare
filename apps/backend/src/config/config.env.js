@@ -11,5 +11,6 @@ export const config = {
     .map(origin => origin.trim())
     .filter(Boolean),
   REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
-  ROOM_TTL: parseInt(process.env.ROOM_TTL, 10) || 600
+  ROOM_TTL: parseInt(process.env.ROOM_TTL, 10) || 600,
+  MAX_PEERS_PER_ROOM: parseInt(process.env.MAX_PEERS_PER_ROOM, 10) || 50
 };

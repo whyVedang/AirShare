@@ -23,7 +23,7 @@ const PEER_SERVER_KEY = (peerID) => `peer:${peerID}:server`;
 const SIGNAL_CHANNEL = (serverID) => `signal:${serverID}`;
 const BROADCAST_CHANNEL = "room-broadcast";
 
-const ROOM_ID_PATTERN = /^[A-Z0-9]{6}$/;
+const ROOM_ID_PATTERN = /^[A-Z0-9]{8}$/;
 const PEER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const normalizeRoomID = (roomID) => typeof roomID === "string"
@@ -161,7 +161,7 @@ export const validateRoom = async (roomID) => {
         PEERS_KEY(normalizedRoomID)
     );
 
-    if (peerCount >= 50) {
+    if (peerCount >= config.MAX_PEERS_PER_ROOM) {
         return {
             valid: false,
             error: "Room full"
@@ -206,7 +206,7 @@ export const joinRoom = async (
         PEERS_KEY(normalizedRoomID)
     );
 
-    if (existingPeers.length >= 50 && !existingPeers.includes(peerID)) {
+    if (existingPeers.length >= config.MAX_PEERS_PER_ROOM && !existingPeers.includes(peerID)) {
         sendError(ws, "Room full");
         return;
     }
