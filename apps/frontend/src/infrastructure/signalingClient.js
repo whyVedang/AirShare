@@ -15,9 +15,9 @@ class SignalingClient {
       onError: null,
       onReconnecting: null,
       onReconnected: null,
+      onWelcome: null,
     };
 
-    // Reconnection state
     this._intentionalDisconnect = false;
     this._reconnectAttempts = 0;
     this._maxReconnectAttempts = 8;
@@ -44,7 +44,7 @@ class SignalingClient {
       this.socket.onerror = (error) => {
         console.error('[WS] Error:', error);
         this._triggerHandler('onError', error);
-        // Only reject on first-ever connection attempt, not during reconnects
+
         if (this._reconnectAttempts === 0) {
           reject(error);
         }
@@ -54,15 +54,18 @@ class SignalingClient {
         this.isConnected = false;
         this.socket = null;
 
-        // Only auto-reconnect if this was NOT caused by us calling disconnect()
         if (!this._intentionalDisconnect) {
           this._scheduleReconnect();
         }
       };
 
       this.socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        this._handleMessage(data);
+        try {
+          const data = JSON.parse(event.data);
+          this._handleMessage(data);
+        } catch (error) {
+          this._triggerHandler('onError', { message: 'Invalid signaling message' });
+        }
       };
     });
   }
@@ -73,10 +76,8 @@ class SignalingClient {
       return;
     }
 
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped at 16s)
     const delay = Math.min(1000 * Math.pow(2, this._reconnectAttempts), 16000);
     this._reconnectAttempts++;
-
 
     this._triggerHandler('onReconnecting', { attempt: this._reconnectAttempts, delay });
 
@@ -91,7 +92,6 @@ class SignalingClient {
 
         this._triggerHandler('onReconnected', { peerID: this.peerID });
       } catch (err) {
-        // _scheduleReconnect will be triggered again via the socket.onclose handler
         console.warn('[WS] Reconnect attempt failed:', err);
       }
     }, delay);
@@ -101,6 +101,13 @@ class SignalingClient {
     const { type, payload } = data;
 
     switch (type) {
+      case 'welcome':
+        if (payload?.peerID && !this.peerId) {
+          this.peerId = payload.peerID;
+        }
+        this._triggerHandler('onWelcome', payload);
+        break;
+
       case 'existing-peers':
         this._triggerHandler('onRoomJoined', payload);
         break;
@@ -125,6 +132,10 @@ class SignalingClient {
         this._triggerHandler('onIceCandidate', payload);
         break;
 
+      case 'error':
+        this._triggerHandler('onError', payload);
+        break;
+
       default:
         console.warn('[WS] Unknown message:', type);
     }
@@ -132,9 +143,10 @@ class SignalingClient {
 
   _send(type, payload) {
     if (!this.isConnected || !this.socket) {
-      console.warn('[WS] Cannot send — not connected.');
+      console.warn('[WS] Cannot send - not connected.');
       return;
     }
+
     this.socket.send(JSON.stringify({ type, payload }));
   }
 
@@ -161,9 +173,17 @@ class SignalingClient {
       sdp: answer
     });
   }
+  
+  sendIceCandidate(roomIDOrTargetPeerID, targetPeerIDOrCandidate, maybeCandidate) {
+    const hasExplicitRoom = maybeCandidate !== undefined;
+    const roomID = hasExplicitRoom ? roomIDOrTargetPeerID : this.roomID;
+    const targetPeerID = hasExplicitRoom ? targetPeerIDOrCandidate : roomIDOrTargetPeerID;
+    const candidate = hasExplicitRoom ? maybeCandidate : targetPeerIDOrCandidate;
+
+    this._send('ice-candidate', { roomID, targetPeerID, candidate });
 
   on(event, handler) {
-    if (this.handlers.hasOwnProperty(event)) {
+    if (Object.prototype.hasOwnProperty.call(this.handlers, event)) {
       this.handlers[event] = handler;
     }
   }
@@ -187,23 +207,6 @@ class SignalingClient {
       this.socket = null;
       this.isConnected = false;
     }
-  }
-
-
-  sendIceCandidate(roomID, targetPeerID, candidate) {
-    this._send('ice-candidate', { roomID, targetPeerID, candidate });
-  }
-
-  sendHostOffer(roomID, sdp) {
-    this._send('host-offer', { roomID, sdp });
-  }
-
-  sendReceiverRequest(roomID) {
-    this._send('receiver-request', { roomID });
-  }
-
-  sendReceiverAnswer(roomID, sdp) {
-    this._send('receiver-answer', { roomID, sdp });
   }
 }
 

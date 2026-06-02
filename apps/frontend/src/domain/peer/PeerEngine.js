@@ -147,7 +147,7 @@ class PeerEngine {
       ],
       // SCTP settings for data channel
       dataChannelOptions: {
-        ordered: false, // Allow out-of-order delivery to prevent head-of-line blocking
+        ordered: true,
         ...config.dataChannelOptions
       }
     };
@@ -189,8 +189,8 @@ class PeerEngine {
     };
 
     this.peerConnection = new RTCPeerConnection(rtcConfig);
-    
-this._setupPeerConnectionListeners();
+
+    this._setupPeerConnectionListeners();
   }
 
   /**
@@ -201,7 +201,7 @@ this._setupPeerConnectionListeners();
     // Connection state monitoring
     this.peerConnection.onconnectionstatechange = () => {
       this.connectionState = this.peerConnection.connectionState;
-this._triggerCallback('onConnectionStateChange', {
+      this._triggerCallback('onConnectionStateChange', {
         state: this.connectionState
       });
 
@@ -214,27 +214,27 @@ this._triggerCallback('onConnectionStateChange', {
     // ICE connection state
     this.peerConnection.oniceconnectionstatechange = () => {
       this.iceConnectionState = this.peerConnection.iceConnectionState;
-};
+    };
 
     // ICE candidate gathering
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
-this._triggerCallback('onIceCandidate', event.candidate);
+        this._triggerCallback('onIceCandidate', event.candidate);
       } else {
-this._triggerCallback('onIceGatheringComplete');
+        this._triggerCallback('onIceGatheringComplete');
       }
     };
 
     // Handle incoming data channels (receiver side)
     this.peerConnection.ondatachannel = (event) => {
-this.remoteDataChannel = event.channel;
+      this.remoteDataChannel = event.channel;
       this._setupDataChannelListeners(this.remoteDataChannel);
       this._triggerCallback('onRemoteDataChannel', event.channel);
     };
 
     // ICE gathering state
     this.peerConnection.onicegatheringstatechange = () => {
-};
+    };
   }
 
   /**
@@ -253,13 +253,12 @@ this.remoteDataChannel = event.channel;
       return this.dataChannel;
     }
 
-    // Create data channel with SCTP configuration
     this.dataChannel = this.peerConnection.createDataChannel(
       label,
       this.config.dataChannelOptions
     );
 
-this._setupDataChannelListeners(this.dataChannel);
+    this._setupDataChannelListeners(this.dataChannel);
     
     return this.dataChannel;
   }
@@ -271,9 +270,6 @@ this._setupDataChannelListeners(this.dataChannel);
    */
   _setupDataChannelListeners(channel) {
     channel.onopen = () => {
-console.log(`[PeerEngine] Protocol: ${channel.protocol || 'SCTP'}`);
-console.log(`[PeerEngine] Max retransmits: ${channel.maxRetransmits}`);
-      
       this._triggerCallback('onDataChannelOpen', {
         label: channel.label,
         channel
@@ -281,7 +277,7 @@ console.log(`[PeerEngine] Max retransmits: ${channel.maxRetransmits}`);
     };
 
     channel.onclose = () => {
-this._triggerCallback('onDataChannelClose', {
+      this._triggerCallback('onDataChannelClose', {
         label: channel.label
       });
     };
@@ -302,7 +298,7 @@ this._triggerCallback('onDataChannelClose', {
     };
 
     channel.onbufferedamountlow = () => {
-};
+    };
   }
 
   /**
@@ -321,8 +317,7 @@ this._triggerCallback('onDataChannelClose', {
       });
 
       await this.peerConnection.setLocalDescription(offer);
-      
-return offer;
+      return offer;
     } catch (error) {
       console.error('[PeerEngine] Failed to create offer:', error);
       throw error;
@@ -341,8 +336,7 @@ return offer;
     try {
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
-      
-return answer;
+      return answer;
     } catch (error) {
       console.error('[PeerEngine] Failed to create answer:', error);
       throw error;
@@ -362,9 +356,28 @@ return answer;
       await this.peerConnection.setRemoteDescription(
         new RTCSessionDescription(description)
       );
-      
-} catch (error) {
+    } catch (error) {
       console.error('[PeerEngine] Failed to set remote description:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Rolls back a local offer during SDP glare handling.
+   */
+  async rollbackLocalDescription() {
+    if (!this.peerConnection) {
+      throw new Error('PeerConnection not initialized');
+    }
+
+    if (this.peerConnection.signalingState !== 'have-local-offer') {
+      return;
+    }
+
+    try {
+      await this.peerConnection.setLocalDescription({ type: 'rollback' });
+    } catch (error) {
+      console.error('[PeerEngine] Failed to rollback local description:', error);
       throw error;
     }
   }
@@ -382,11 +395,22 @@ return answer;
       await this.peerConnection.addIceCandidate(
         new RTCIceCandidate(candidate)
       );
-      
-} catch (error) {
+    } catch (error) {
       console.error('[PeerEngine] Failed to add ICE candidate:', error);
       throw error;
     }
+  }
+
+  getSignalingState() {
+    return this.peerConnection?.signalingState || 'closed';
+  }
+
+  hasRemoteDescription() {
+    return Boolean(this.peerConnection?.remoteDescription);
+  }
+
+  hasDataChannel() {
+    return Boolean(this.dataChannel || this.remoteDataChannel);
   }
 
   /**
@@ -501,7 +525,7 @@ return answer;
    * Closes the peer connection and cleans up resources
    */
   close() {
-if (this.dataChannel) {
+    if (this.dataChannel) {
       this.dataChannel.close();
       this.dataChannel = null;
     }

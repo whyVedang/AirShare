@@ -1,15 +1,17 @@
 import { z } from "zod";
 
+export const roomCodeSchema = z.string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z0-9]{8}$/, "roomID must be an 8-character room code");
+
 export const JoinRoomSchema = z.object({
-    roomID: z.string().length(6, "roomID must be a 6-character code"),
-    peerID: z.string().min(1, "peerID is required"),
+  peerID: z.string().min(1, "peerID is required"),
     params: z.object({
-         roomID: z.string().length(6, "roomID must be a 6-character code")
-     })
+        roomID: roomCodeSchema
+    })
 });
 
 export const createRoomSchema = z.object({
-    body: z.object({
-        password: z.string().optional()
-        })
+    body: z.object({}).strict().optional()
 });

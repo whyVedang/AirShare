@@ -8,6 +8,7 @@ import {
 } from "../config/config.redis.js";
 
 import { config } from "../config/config.env.js";
+import logger from "../config/config.logger.js";
 
 const SERVER_ID = crypto.randomUUID();
 
@@ -22,13 +23,29 @@ const PEER_SERVER_KEY = (peerID) => `peer:${peerID}:server`;
 const SIGNAL_CHANNEL = (serverID) => `signal:${serverID}`;
 const BROADCAST_CHANNEL = "room-broadcast";
 
-const sendData = (ws, data) => {
-    if (!ws) return;
+const ROOM_ID_PATTERN = /^[A-Z0-9]{8}$/;
+const PEER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    if (ws.readyState !== WebSocket.OPEN) return;
+const normalizeRoomID = (roomID) => typeof roomID === "string"
+    ? roomID.trim().toUpperCase()
+    : "";
+
+const isValidRoomID = (roomID) => ROOM_ID_PATTERN.test(roomID);
+const isValidPeerID = (peerID) => typeof peerID === "string" && PEER_ID_PATTERN.test(peerID);
+
+const sendData = (ws, data) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return false;
+    }
 
     ws.send(JSON.stringify(data));
+    return true;
 };
+
+const sendError = (ws, message) => sendData(ws, {
+    type: "error",
+    payload: { message }
+});
 
 const refreshTTL = async (roomID) => {
     await redis
@@ -38,8 +55,13 @@ const refreshTTL = async (roomID) => {
         .exec();
 };
 
-await redisSub.subscribe(SIGNAL_CHANNEL(SERVER_ID));
-await redisSub.subscribe(BROADCAST_CHANNEL);
+const subscriptionReady = Promise.all([
+    redisSub.subscribe(SIGNAL_CHANNEL(SERVER_ID)),
+    redisSub.subscribe(BROADCAST_CHANNEL)
+]).catch((err) => {
+    logger.error({ err }, "Failed to subscribe to signaling channels");
+    return [];
+});
 
 redisSub.on("message", async (channel, rawMessage) => {
     try {
@@ -47,9 +69,7 @@ redisSub.on("message", async (channel, rawMessage) => {
 
         if (channel === SIGNAL_CHANNEL(SERVER_ID)) {
             const ws = localPeers.get(data.targetPeerID);
-
             sendData(ws, data.payload);
-
             return;
         }
 
@@ -60,46 +80,48 @@ redisSub.on("message", async (channel, rawMessage) => {
                 payload
             } = data;
 
-            const peers = await redis.smembers(
-                PEERS_KEY(roomID)
-            );
-
-            for (const peerID of peers) {
-                if (peerID === excludePeerID) continue;
-
-                const ws = localPeers.get(peerID);
-
-                sendData(ws, payload);
-            }
+            localPeers.forEach((ws, peerID) => {
+                if (peerID !== excludePeerID && ws.roomID === roomID) {
+                    sendData(ws, payload);
+                }
+            });
         }
     } catch (err) {
-        console.error("Redis subscriber error:", err);
+        logger.error({ err }, "Redis subscriber error");
     }
 });
 
 export const createRoom = async (roomID) => {
-    if (!roomID) {
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (!isValidRoomID(normalizedRoomID)) {
         throw new Error("Invalid roomID");
     }
 
     await redis
         .multi()
-        .hsetnx(ROOM_KEY(roomID), "id", roomID)
+        .hsetnx(ROOM_KEY(normalizedRoomID), "id", normalizedRoomID)
         .hsetnx(
-            ROOM_KEY(roomID),
+            ROOM_KEY(normalizedRoomID),
             "createdAt",
             new Date().toISOString()
         )
-        .expire(ROOM_KEY(roomID), config.ROOM_TTL)
-        .expire(PEERS_KEY(roomID), config.ROOM_TTL)
+        .expire(ROOM_KEY(normalizedRoomID), config.ROOM_TTL)
+        .expire(PEERS_KEY(normalizedRoomID), config.ROOM_TTL)
         .exec();
 
-    return roomID;
+    return normalizedRoomID;
 };
 
 export const getRoom = async (roomID) => {
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (!isValidRoomID(normalizedRoomID)) {
+        return null;
+    }
+
     const room = await redis.hgetall(
-        ROOM_KEY(roomID)
+        ROOM_KEY(normalizedRoomID)
     );
 
     if (!room || Object.keys(room).length === 0) {
@@ -107,7 +129,7 @@ export const getRoom = async (roomID) => {
     }
 
     const peers = await redis.smembers(
-        PEERS_KEY(roomID)
+        PEERS_KEY(normalizedRoomID)
     );
 
     return {
@@ -117,7 +139,16 @@ export const getRoom = async (roomID) => {
 };
 
 export const validateRoom = async (roomID) => {
-    const room = await getRoom(roomID);
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (!isValidRoomID(normalizedRoomID)) {
+        return {
+            valid: false,
+            error: "Invalid room code"
+        };
+    }
+
+    const room = await getRoom(normalizedRoomID);
 
     if (!room) {
         return {
@@ -127,10 +158,10 @@ export const validateRoom = async (roomID) => {
     }
 
     const peerCount = await redis.scard(
-        PEERS_KEY(roomID)
+        PEERS_KEY(normalizedRoomID)
     );
 
-    if (peerCount >= 50) {
+    if (peerCount >= config.MAX_PEERS_PER_ROOM) {
         return {
             valid: false,
             error: "Room full"
@@ -149,33 +180,43 @@ export const joinRoom = async (
     peerID,
     ws
 ) => {
-    if (!roomID || !peerID || !ws) {
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (!ws) {
         return;
     }
 
-    const peerCount = await redis.scard(
-        PEERS_KEY(roomID)
-    );
+    if (!isValidRoomID(normalizedRoomID)) {
+        sendError(ws, "Invalid room code");
+        return;
+    }
 
-    if (peerCount >= 50) {
-        sendData(ws, {
-            type: "error",
-            message: "Room full"
-        });
+    if (!isValidPeerID(peerID)) {
+        sendError(ws, "Invalid peer ID");
+        return;
+    }
 
+    const room = await getRoom(normalizedRoomID);
+    if (!room) {
+        sendError(ws, "Room not found");
         return;
     }
 
     const existingPeers = await redis.smembers(
-        PEERS_KEY(roomID)
+        PEERS_KEY(normalizedRoomID)
     );
+
+    if (existingPeers.length >= config.MAX_PEERS_PER_ROOM && !existingPeers.includes(peerID)) {
+        sendError(ws, "Room full");
+        return;
+    }
 
     await redis
         .multi()
-        .sadd(PEERS_KEY(roomID), peerID)
+        .sadd(PEERS_KEY(normalizedRoomID), peerID)
         .set(
             PEER_ROOM_KEY(peerID),
-            roomID,
+            normalizedRoomID,
             "EX",
             config.ROOM_TTL
         )
@@ -186,35 +227,55 @@ export const joinRoom = async (
             config.ROOM_TTL
         )
         .expire(
-            PEERS_KEY(roomID),
+            ROOM_KEY(normalizedRoomID),
+            config.ROOM_TTL
+        )
+        .expire(
+            PEERS_KEY(normalizedRoomID),
             config.ROOM_TTL
         )
         .exec();
 
+    const previousSocket = localPeers.get(peerID);
+    if (
+        previousSocket &&
+        previousSocket !== ws &&
+        previousSocket.readyState === WebSocket.OPEN
+    ) {
+        previousSocket.skipDisconnectCleanup = true;
+        previousSocket.close();
+    }
+
     localPeers.set(peerID, ws);
 
-    ws.roomID = roomID;
+    ws.roomID = normalizedRoomID;
     ws.peerID = peerID;
     ws.isAlive = true;
+    ws.skipDisconnectCleanup = false;
+    ws.disconnectCleanupStarted = false;
+
+    const cleanup = async () => {
+        if (ws.skipDisconnectCleanup || ws.disconnectCleanupStarted) {
+            return;
+        }
+
+        ws.disconnectCleanupStarted = true;
+        await handleDisconnect(peerID);
+    };
 
     ws.on("pong", () => {
         ws.isAlive = true;
     });
 
-    ws.on("close", async () => {
-        await handleDisconnect(peerID);
-    });
-
-    ws.on("error", async () => {
-        await handleDisconnect(peerID);
-    });
+    ws.on("close", cleanup);
+    ws.on("error", cleanup);
 
     sendData(ws, {
         type: "existing-peers",
         payload: existingPeers
     });
 
-    await broadcast(roomID, peerID, {
+    await broadcast(normalizedRoomID, peerID, {
         type: "new-peer",
         payload: peerID
     });
@@ -224,29 +285,35 @@ export const leaveRoom = async (
     roomID,
     peerID
 ) => {
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (!isValidRoomID(normalizedRoomID) || !isValidPeerID(peerID)) {
+        return;
+    }
+
     await redis
         .multi()
-        .srem(PEERS_KEY(roomID), peerID)
+        .srem(PEERS_KEY(normalizedRoomID), peerID)
         .del(PEER_ROOM_KEY(peerID))
         .del(PEER_SERVER_KEY(peerID))
         .exec();
 
     localPeers.delete(peerID);
 
-    await broadcast(roomID, peerID, {
+    await broadcast(normalizedRoomID, peerID, {
         type: "peer-disconnected",
         payload: peerID
     });
 
     const remaining = await redis.scard(
-        PEERS_KEY(roomID)
+        PEERS_KEY(normalizedRoomID)
     );
 
     if (remaining === 0) {
         await redis
             .multi()
-            .del(ROOM_KEY(roomID))
-            .del(PEERS_KEY(roomID))
+            .del(ROOM_KEY(normalizedRoomID))
+            .del(PEERS_KEY(normalizedRoomID))
             .exec();
     }
 };
@@ -256,19 +323,7 @@ export const broadcast = async (
     excludePeerID,
     payload
 ) => {
-
-    const peers = await redis.smembers(
-        PEERS_KEY(roomID)
-    );
-
-    for (const peerID of peers) {
-        if (peerID === excludePeerID) continue;
-
-        const ws = localPeers.get(peerID);
-
-        sendData(ws, payload);
-    }
-
+    await subscriptionReady;
     await redisPub.publish(
         BROADCAST_CHANNEL,
         JSON.stringify({
@@ -279,13 +334,31 @@ export const broadcast = async (
     );
 };
 
-
 export const relaySignal = async (
     roomID,
     fromPeerID,
     targetPeerID,
     message
 ) => {
+    const normalizedRoomID = normalizeRoomID(roomID);
+
+    if (
+        !isValidRoomID(normalizedRoomID) ||
+        !isValidPeerID(fromPeerID) ||
+        !isValidPeerID(targetPeerID)
+    ) {
+        return;
+    }
+
+    const [senderRoomID, targetRoomID] = await Promise.all([
+        redis.get(PEER_ROOM_KEY(fromPeerID)),
+        redis.get(PEER_ROOM_KEY(targetPeerID))
+    ]);
+
+    if (senderRoomID !== normalizedRoomID || targetRoomID !== normalizedRoomID) {
+        return;
+    }
+
     const payload = {
         type: message.type,
         payload: {
@@ -294,15 +367,10 @@ export const relaySignal = async (
         }
     };
 
-    const localWs =
-        localPeers.get(targetPeerID);
+    const localWs = localPeers.get(targetPeerID);
 
-    if (
-        localWs &&
-        localWs.readyState === WebSocket.OPEN
-    ) {
-        sendData(localWs, payload);
-
+    if (sendData(localWs, payload)) {
+        await refreshTTL(normalizedRoomID);
         return;
     }
 
@@ -314,6 +382,7 @@ export const relaySignal = async (
         return;
     }
 
+    await subscriptionReady;
     await redisPub.publish(
         SIGNAL_CHANNEL(targetServerID),
         JSON.stringify({
@@ -322,7 +391,7 @@ export const relaySignal = async (
         })
     );
 
-    await refreshTTL(roomID);
+    await refreshTTL(normalizedRoomID);
 };
 
 export const handleDisconnect = async (
@@ -335,72 +404,37 @@ export const handleDisconnect = async (
 
         if (!roomID) {
             localPeers.delete(peerID);
-
             return;
         }
 
         await leaveRoom(roomID, peerID);
     } catch (err) {
-        console.error(
-            "Disconnect cleanup error:",
-            err
-        );
+        logger.error({ err }, "Disconnect cleanup error");
     }
 };
 
 export const setupHeartbeat = (wss) => {
     setInterval(() => {
+        const activeRoomIDs = new Set();
+
         wss.clients.forEach((ws) => {
             if (ws.isAlive === false) {
                 return ws.terminate();
+            }
+
+            if (ws.readyState === WebSocket.OPEN && ws.roomID) {
+                activeRoomIDs.add(ws.roomID);
             }
 
             ws.isAlive = false;
 
             ws.ping();
         });
+
+        activeRoomIDs.forEach((roomID) => {
+            refreshTTL(roomID).catch((err) => {
+                logger.error({ err, roomID }, "Room TTL refresh failed");
+            });
+        });
     }, 30000);
-};
-
-export const getAllRooms = async () => {
-    let cursor = "0";
-
-    const roomIDs = [];
-
-    do {
-        const [nextCursor, keys] =
-            await redis.scan(
-                cursor,
-                "MATCH",
-                "room:*",
-                "COUNT",
-                100
-            );
-
-        cursor = nextCursor;
-
-        for (const key of keys) {
-            const parts = key.split(":");
-
-            if (parts.length === 2) {
-                roomIDs.push(parts[1]);
-            }
-        }
-    } while (cursor !== "0");
-
-    const rooms = await Promise.all(
-        roomIDs.map(async (roomID) => {
-            const peerCount =
-                await redis.scard(
-                    PEERS_KEY(roomID)
-                );
-
-            return {
-                id: roomID,
-                peerCount
-            };
-        })
-    );
-
-    return rooms;
 };

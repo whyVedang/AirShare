@@ -1,16 +1,25 @@
 import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { useTheme } from '../context/ThemeContext';
 
 const Home = ({ onJoinRoom, onNavigateToAbout }) => {
   const { isDark } = useTheme();
   const [roomId, setRoomId] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
+  const [error, setError] = useState("");
+
+  const signalingUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:5000';
+  const apiUrl = (import.meta.env.VITE_API_URL || signalingUrl.replace(/^ws/, 'http')).replace(/\/$/, '');
 
   const handleCreateRoom = async () => {
-    const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    if (isGenerating) return;
+
+    setIsGenerating(true);
+    setError("");
+
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/api/v1/room`, {
+      const response = await fetch(`${apiUrl}/api/v1/room/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" }
       });
@@ -19,26 +28,45 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
 
       const data = await response.json();
 
-      navigate(`/room/${data.roomID}`);
+      if (onJoinRoom) {
+        onJoinRoom(data.roomID);
+      }
     } catch (error) {
-      console.error("Error creating room:", error);
-      alert("Could not create room. Please try again.");
-    }
-
-    setIsGenerating(true);
-
-    if (onJoinRoom) {
-      setTimeout(() => {
-        onJoinRoom(newRoomId);
-      }, 1000);
+      setError("Could not create room. Please try again.");
+    } finally {
+      setIsGenerating(false);
     }
   };
 
-  const handleJoinRoom = () => {
-    if (roomId.trim() && onJoinRoom) {
-      setTimeout(() => {
-        onJoinRoom(roomId);
-      }, 800);
+  const handleJoinRoom = async () => {
+    const normalizedRoomID = roomId.trim().toUpperCase();
+
+    if (isJoining || !onJoinRoom) return;
+
+    if (!/^[A-Z0-9]{8}$/.test(normalizedRoomID)) {
+      setError("Enter a valid 8-character room code.");
+      return;
+    }
+
+    setIsJoining(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/room/${normalizedRoomID}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || "Room is not available.");
+      }
+
+      onJoinRoom(normalizedRoomID);
+    } catch (err) {
+      setError(err.message || "Could not join room. Please try again.");
+    } finally {
+      setIsJoining(false);
     }
   };
 
@@ -256,7 +284,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
             Direct. Encrypted. Unstoppable.
           </p>
           <p className="text-[#FF5C00]/40 text-xs mt-2 font-mono uppercase tracking-widest">
-            WebRTC • P2P • Zero-Server
+            WebRTC | P2P | Zero-Server
           </p>
         </motion.div>
 
@@ -286,6 +314,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
 
             <motion.button
               onClick={handleCreateRoom}
+              disabled={isGenerating}
               className="w-full py-4 px-8 bg-gradient-to-r from-[#FF5C00] to-[#FF7A33] text-white rounded-lg font-bold text-base tracking-wide relative overflow-hidden group"
               style={{
                 boxShadow: '0 4px 20px rgba(255, 92, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2)'
@@ -296,7 +325,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
               }}
               whileTap={{ scale: 0.98 }}
             >
-              <span className="relative z-10">Generate Code</span>
+              <span className="relative z-10">{isGenerating ? "Generating..." : "Generate Code"}</span>
               <div className="absolute inset-0 bg-gradient-to-r from-white/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
             </motion.button>
 
@@ -333,20 +362,25 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
                 <input
                   type="text"
                   value={roomId}
-                  onChange={(e) => setRoomId(e.target.value.toUpperCase())}
-                  onKeyPress={(e) => e.key === 'Enter' && handleJoinRoom()}
-                  placeholder="ABC123"
+                  onChange={(e) => setRoomId(e.target.value.replace(/[^a-z0-9]/gi, '').toUpperCase())}
+                  onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
+                  placeholder="ABCD1234"
                   className="w-full py-4 px-6 bg-black/60 border border-white/10 text-white rounded-lg font-mono text-2xl text-center placeholder:text-gray-700 focus:outline-none focus:border-[#FF5C00]/50 focus:ring-2 focus:ring-[#FF5C00]/20 transition-all uppercase tracking-widest"
                   style={{
                     boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
                   }}
-                  maxLength={6}
+                  maxLength={8}
                 />
+                {error && (
+                  <p className="mt-3 text-sm text-red-400 text-center">
+                    {error}
+                  </p>
+                )}
               </div>
 
               <motion.button
                 onClick={handleJoinRoom}
-                disabled={!roomId.trim()}
+                disabled={!roomId.trim() || isJoining}
                 className="w-full py-4 px-8 bg-white/5 hover:bg-white/10 disabled:bg-black/40 disabled:cursor-not-allowed border border-white/10 hover:border-[#FF5C00]/30 disabled:border-white/5 text-white rounded-lg font-bold text-base tracking-wide transition-all disabled:text-gray-700"
                 style={!roomId.trim() ? {} : {
                   boxShadow: '0 2px 12px rgba(255, 92, 0, 0.1)'
@@ -357,7 +391,7 @@ const Home = ({ onJoinRoom, onNavigateToAbout }) => {
                 } : {}}
                 whileTap={roomId.trim() ? { scale: 0.98 } : {}}
               >
-                Connect to Room
+                {isJoining ? "Connecting..." : "Connect to Room"}
               </motion.button>
             </div>
           </motion.div>

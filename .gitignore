@@ -159,3 +159,6 @@ Thumbs.db
 # Coturn specifics
 coturn/turnserver.conf
 turndb
+
+reports/
+rit_template_image1.png
