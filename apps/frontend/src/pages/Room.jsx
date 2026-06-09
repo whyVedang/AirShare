@@ -104,7 +104,7 @@ const Room = ({ roomId, onLeave }) => {
   }, [roomId]);
 
   const rememberPeerInUi = (peerID, status = 'connecting') => {
-    if (!peerID || peerID === clientRef.current?.peerId) return;
+    if (!peerID || peerID === clientRef.current?.peerID) return;
 
     setActivePeers(prev => {
       if (prev.some(peer => peer.id === peerID)) {
@@ -124,7 +124,7 @@ const Room = ({ roomId, onLeave }) => {
   };
 
   const getOrCreatePeer = (peerID) => {
-    if (!peerID || peerID === clientRef.current?.peerId) return null;
+    if (!peerID || peerID === clientRef.current?.peerID) return null;
 
     const existingPeer = peersRef.current.get(peerID);
     if (existingPeer) return existingPeer;
@@ -194,7 +194,7 @@ const Room = ({ roomId, onLeave }) => {
   };
 
   const shouldSendFallbackOffer = (peerID) => {
-    const localPeerID = clientRef.current?.peerId;
+    const localPeerID = clientRef.current?.peerID;
     return Boolean(localPeerID && peerID && localPeerID < peerID);
   };
 
@@ -235,7 +235,7 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     client.on('onRoomJoined', (peersList = []) => {
-      const existingPeers = peersList.filter(peerID => peerID && peerID !== client.peerId);
+      const existingPeers = peersList.filter(peerID => peerID && peerID !== client.peerID);
 
       addLog(`Existing peers: ${existingPeers.length}`);
       if (existingPeers.length === 0) {
@@ -250,7 +250,7 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     client.on('onPeerJoined', (peerID) => {
-      if (!peerID || peerID === client.peerId) return;
+      if (!peerID || peerID === client.peerID) return;
 
       if (peersRef.current.has(peerID)) {
         addLog(`Peer rejoined (WebRTC self-healing active): ${peerID}`);
@@ -264,13 +264,13 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     client.on('onOffer', async ({ sdp, from }) => {
-      if (!from || from === client.peerId) return;
+      if (!from || from === client.peerID) return;
 
       addLog(`Received offer from ${from}`);
       rememberPeerInUi(from);
 
       const peer = getOrCreatePeer(from);
-      const polite = client.peerId > from;
+      const polite = client.peerID > from;
       const signalingState = peer.getSignalingState();
       const offerCollision = makingOfferRef.current.has(from) || signalingState !== 'stable';
 

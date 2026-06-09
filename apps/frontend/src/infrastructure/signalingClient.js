@@ -102,8 +102,8 @@ class SignalingClient {
 
     switch (type) {
       case 'welcome':
-        if (payload?.peerID && !this.peerId) {
-          this.peerId = payload.peerID;
+        if (payload?.peerID && !this.peerID) {
+          this.peerID = payload.peerID;
         }
         this._triggerHandler('onWelcome', payload);
         break;

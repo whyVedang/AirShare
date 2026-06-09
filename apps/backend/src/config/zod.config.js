@@ -6,7 +6,6 @@ export const roomCodeSchema = z.string()
     .regex(/^[A-Z0-9]{8}$/, "roomID must be an 8-character room code");
 
 export const JoinRoomSchema = z.object({
-  peerID: z.string().min(1, "peerID is required"),
     params: z.object({
         roomID: roomCodeSchema
     })
