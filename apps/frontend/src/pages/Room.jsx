@@ -10,6 +10,9 @@ const MESH_SEND_BATCH_SIZE = 3;
 const MESH_SOFT_PEER_LIMIT = 16;
 const RECEIVER_AUTO_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
 const RESUME_RETRY_LIMIT = 1;
+const PEER_CONNECT_TIMEOUT_MS = 12000;
+const PEER_RECOVERY_DELAYS_MS = [2000, 5000, 10000, 20000, 30000];
+const MAX_PEER_RECOVERY_ATTEMPTS = PEER_RECOVERY_DELAYS_MS.length;
 
 const getMeshBatchSize = (peerCount) => (
   peerCount > MESH_SOFT_PEER_LIMIT ? 2 : MESH_SEND_BATCH_SIZE
@@ -24,11 +27,17 @@ const Room = ({ roomId, onLeave }) => {
   const pendingIceCandidatesRef = useRef(new Map());
   const makingOfferRef = useRef(new Set());
   const fallbackTimersRef = useRef(new Map());
+  const recoveryTimersRef = useRef(new Map());
+  const connectWatchdogTimersRef = useRef(new Map());
+  const recoveryAttemptsRef = useRef(new Map());
+  const intentionalPeerCloseRef = useRef(new Set());
 
   const didInit = useRef(false);
+  const isLeavingRoomRef = useRef(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [activePeers, setActivePeers] = useState([]);
   const [selectedPeers, setSelectedPeers] = useState(new Set());
+  const activePeersRef = useRef([]);
 
   const [isDragOver, setIsDragOver] = useState(false);
   const [files, setFiles] = useState([]);
@@ -64,8 +73,13 @@ const Room = ({ roomId, onLeave }) => {
   }, [logs]);
 
   useEffect(() => {
+    activePeersRef.current = activePeers;
+  }, [activePeers]);
+
+  useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
+    isLeavingRoomRef.current = false;
     const client = new SignalingClient(import.meta.env.VITE_WS_URL || 'ws://localhost:5000');
     clientRef.current = client;
 
@@ -84,6 +98,7 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     return () => {
+      isLeavingRoomRef.current = true;
       // Disconnect all peers securely
       transfersRef.current.forEach(tc => tc.detachChannel());
       peersRef.current.forEach(peer => peer.close());
@@ -93,6 +108,12 @@ const Room = ({ roomId, onLeave }) => {
       makingOfferRef.current.clear();
       fallbackTimersRef.current.forEach(timer => clearTimeout(timer));
       fallbackTimersRef.current.clear();
+      recoveryTimersRef.current.forEach(timer => clearTimeout(timer));
+      recoveryTimersRef.current.clear();
+      connectWatchdogTimersRef.current.forEach(timer => clearTimeout(timer));
+      connectWatchdogTimersRef.current.clear();
+      recoveryAttemptsRef.current.clear();
+      intentionalPeerCloseRef.current.clear();
       activeFileAbortersRef.current.forEach(controller => controller.abort('leaving-room'));
       activeFileAbortersRef.current.clear();
       activeFileControllersRef.current.clear();
@@ -121,6 +142,55 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     setSelectedPeers(prev => new Set([...prev, peerID]));
+  };
+
+  const updatePeerStatus = (peerID, status) => {
+    setActivePeers(prev => prev.map(peer => (
+      peer.id === peerID ? { ...peer, status } : peer
+    )));
+  };
+
+  const clearPeerTimers = (peerID) => {
+    const fallbackTimer = fallbackTimersRef.current.get(peerID);
+    if (fallbackTimer) clearTimeout(fallbackTimer);
+    fallbackTimersRef.current.delete(peerID);
+
+    const recoveryTimer = recoveryTimersRef.current.get(peerID);
+    if (recoveryTimer) clearTimeout(recoveryTimer);
+    recoveryTimersRef.current.delete(peerID);
+
+    const watchdogTimer = connectWatchdogTimersRef.current.get(peerID);
+    if (watchdogTimer) clearTimeout(watchdogTimer);
+    connectWatchdogTimersRef.current.delete(peerID);
+  };
+
+  const closePeerConnection = (peerID, { removeFromUi = false } = {}) => {
+    clearPeerTimers(peerID);
+
+    const tc = transfersRef.current.get(peerID);
+    if (tc) tc.detachChannel();
+    transfersRef.current.delete(peerID);
+
+    const peer = peersRef.current.get(peerID);
+    if (peer) {
+      intentionalPeerCloseRef.current.add(peerID);
+      peer.close();
+      setTimeout(() => intentionalPeerCloseRef.current.delete(peerID), 1000);
+    }
+
+    peersRef.current.delete(peerID);
+    pendingIceCandidatesRef.current.delete(peerID);
+    makingOfferRef.current.delete(peerID);
+
+    if (removeFromUi) {
+      recoveryAttemptsRef.current.delete(peerID);
+      setActivePeers(prev => prev.filter(peer => peer.id !== peerID));
+      setSelectedPeers(prev => {
+        const next = new Set(prev);
+        next.delete(peerID);
+        return next;
+      });
+    }
   };
 
   const getOrCreatePeer = (peerID) => {
@@ -164,7 +234,7 @@ const Room = ({ roomId, onLeave }) => {
     }
   };
 
-  const startOffer = async (peerID, reason = 'mesh') => {
+  const startOffer = async (peerID, reason = 'mesh', { iceRestart = false } = {}) => {
     const client = clientRef.current;
     const peer = getOrCreatePeer(peerID);
 
@@ -172,22 +242,30 @@ const Room = ({ roomId, onLeave }) => {
 
     if (peer.getSignalingState() !== 'stable') {
       addLog(`Offer delayed for ${peerID.substring(0, 8)}: signaling busy`);
+      schedulePeerRecovery(peerID, 'signaling busy');
       return;
     }
 
     try {
       makingOfferRef.current.add(peerID);
+      updatePeerStatus(peerID, 'connecting');
 
       if (!peer.hasDataChannel()) {
         peer.createDataChannel('airshare-data');
       }
 
-      const offer = await peer.createOffer();
+      if (iceRestart) {
+        peer.restartIce();
+      }
+
+      const offer = await peer.createOffer({ iceRestart });
       client.sendOffer(peerID, offer);
       addLog(`Offer sent to ${peerID.substring(0, 8)} (${reason})`);
+      scheduleConnectionWatchdog(peerID);
     } catch (err) {
       console.error("Failed to create offer:", err);
       addLog(`Offer failed for ${peerID.substring(0, 8)}`);
+      schedulePeerRecovery(peerID, 'offer failed');
     } finally {
       makingOfferRef.current.delete(peerID);
     }
@@ -196,6 +274,87 @@ const Room = ({ roomId, onLeave }) => {
   const shouldSendFallbackOffer = (peerID) => {
     const localPeerID = clientRef.current?.peerID;
     return Boolean(localPeerID && peerID && localPeerID < peerID);
+  };
+
+  const scheduleConnectionWatchdog = (peerID) => {
+    const existingTimer = connectWatchdogTimersRef.current.get(peerID);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timer = setTimeout(() => {
+      connectWatchdogTimersRef.current.delete(peerID);
+
+      const peer = peersRef.current.get(peerID);
+      if (!peer || peer.isReady() || isLeavingRoomRef.current) {
+        return;
+      }
+
+      schedulePeerRecovery(peerID, 'connection timeout');
+    }, PEER_CONNECT_TIMEOUT_MS);
+
+    connectWatchdogTimersRef.current.set(peerID, timer);
+  };
+
+  const schedulePeerRecovery = (peerID, reason = 'connection issue') => {
+    const client = clientRef.current;
+
+    if (
+      isLeavingRoomRef.current ||
+      !client?.isConnected ||
+      !peerID ||
+      peerID === client.peerID
+    ) {
+      return;
+    }
+
+    const currentPeer = peersRef.current.get(peerID);
+    if (currentPeer?.isReady()) {
+      clearPeerTimers(peerID);
+      recoveryAttemptsRef.current.delete(peerID);
+      return;
+    }
+
+    if (recoveryTimersRef.current.has(peerID)) {
+      return;
+    }
+
+    const nextAttempt = (recoveryAttemptsRef.current.get(peerID) || 0) + 1;
+    if (nextAttempt > MAX_PEER_RECOVERY_ATTEMPTS) {
+      updatePeerStatus(peerID, 'failed');
+      addLog(`Peer reconnect failed after ${MAX_PEER_RECOVERY_ATTEMPTS} attempt(s): ${peerID.substring(0, 8)}`);
+      return;
+    }
+
+    recoveryAttemptsRef.current.set(peerID, nextAttempt);
+    updatePeerStatus(peerID, 'reconnecting');
+
+    const delay = PEER_RECOVERY_DELAYS_MS[nextAttempt - 1];
+    addLog(`Retrying peer ${peerID.substring(0, 8)} in ${Math.round(delay / 1000)}s (${reason})`);
+
+    const timer = setTimeout(() => {
+      recoveryTimersRef.current.delete(peerID);
+
+      if (isLeavingRoomRef.current || !clientRef.current?.isConnected) {
+        return;
+      }
+
+      const peer = peersRef.current.get(peerID);
+      if (peer?.isReady()) {
+        clearPeerTimers(peerID);
+        recoveryAttemptsRef.current.delete(peerID);
+        return;
+      }
+
+      if (peer && peer.getSignalingState() === 'stable' && nextAttempt === 1) {
+        startOffer(peerID, `ICE restart ${nextAttempt}/${MAX_PEER_RECOVERY_ATTEMPTS}`, { iceRestart: true });
+        return;
+      }
+
+      closePeerConnection(peerID);
+      rememberPeerInUi(peerID, 'connecting');
+      startOffer(peerID, `reconnect ${nextAttempt}/${MAX_PEER_RECOVERY_ATTEMPTS}`, { iceRestart: true });
+    }, delay);
+
+    recoveryTimersRef.current.set(peerID, timer);
   };
 
   const scheduleFallbackOffer = (peerID) => {
@@ -224,6 +383,14 @@ const Room = ({ roomId, onLeave }) => {
 
     client.on('onReconnected', () => {
       addLog('Reconnected to signaling server');
+      setConnectionStatus('connected');
+
+      activePeersRef.current.forEach(({ id }) => {
+        const peer = peersRef.current.get(id);
+        if (!peer?.isReady()) {
+          schedulePeerRecovery(id, 'signaling reconnected');
+        }
+      });
     });
 
     client.on('onError', (error) => {
@@ -244,6 +411,7 @@ const Room = ({ roomId, onLeave }) => {
       }
 
       existingPeers.forEach(peerID => {
+        recoveryAttemptsRef.current.delete(peerID);
         rememberPeerInUi(peerID);
         startOffer(peerID, 'existing peer');
       });
@@ -252,9 +420,11 @@ const Room = ({ roomId, onLeave }) => {
     client.on('onPeerJoined', (peerID) => {
       if (!peerID || peerID === client.peerID) return;
 
+      recoveryAttemptsRef.current.delete(peerID);
+
       if (peersRef.current.has(peerID)) {
         addLog(`Peer rejoined (WebRTC self-healing active): ${peerID}`);
-        scheduleFallbackOffer(peerID);
+        schedulePeerRecovery(peerID, 'peer rejoined');
         return;
       }
 
@@ -294,8 +464,10 @@ const Room = ({ roomId, onLeave }) => {
 
         const answer = await peer.createAnswer();
         client.sendAnswer(from, answer);
+        scheduleConnectionWatchdog(from);
       } catch (err) {
         console.error("Failed to handle offer:", err);
+        schedulePeerRecovery(from, 'offer handling failed');
       }
     });
 
@@ -309,8 +481,10 @@ const Room = ({ roomId, onLeave }) => {
       try {
         await peer.setRemoteDescription(sdp);
         await flushPendingIceCandidates(from);
+        scheduleConnectionWatchdog(from);
       } catch (err) {
         console.error("Failed to handle answer:", err);
+        schedulePeerRecovery(from, 'answer handling failed');
       }
     });
 
@@ -331,28 +505,7 @@ const Room = ({ roomId, onLeave }) => {
 
     client.on('onPeerLeft', (peerID) => {
       addLog(`Peer left: ${peerID}`);
-
-      const tc = transfersRef.current.get(peerID);
-      if (tc) tc.detachChannel();
-
-      const peer = peersRef.current.get(peerID);
-      if (peer) peer.close();
-
-      transfersRef.current.delete(peerID);
-      peersRef.current.delete(peerID);
-      pendingIceCandidatesRef.current.delete(peerID);
-      makingOfferRef.current.delete(peerID);
-
-      const timer = fallbackTimersRef.current.get(peerID);
-      if (timer) clearTimeout(timer);
-      fallbackTimersRef.current.delete(peerID);
-
-      setActivePeers(prev => prev.filter(p => p.id !== peerID));
-      setSelectedPeers(prev => {
-        const next = new Set(prev);
-        next.delete(peerID);
-        return next;
-      });
+      closePeerConnection(peerID, { removeFromUi: true });
     });
   };
 
@@ -457,14 +610,34 @@ const Room = ({ roomId, onLeave }) => {
 
     peer.on('onConnectionStateChange', ({ state }) => {
       if (state === 'connected') {
+        clearPeerTimers(targetPeerID);
+        recoveryAttemptsRef.current.delete(targetPeerID);
         setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, status: 'connected' } : p));
         addLog(`P2P connected: ${targetPeerID}`);
       } else if (state === 'failed' || state === 'disconnected') {
         setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, status: state } : p));
+        schedulePeerRecovery(targetPeerID, `peer ${state}`);
+      } else if (state === 'connecting') {
+        updatePeerStatus(targetPeerID, 'connecting');
+        scheduleConnectionWatchdog(targetPeerID);
+      }
+    });
+
+    peer.on('onIceConnectionStateChange', ({ state }) => {
+      if (state === 'connected' || state === 'completed') {
+        clearPeerTimers(targetPeerID);
+        recoveryAttemptsRef.current.delete(targetPeerID);
+      } else if (state === 'failed' || state === 'disconnected') {
+        updatePeerStatus(targetPeerID, state);
+        schedulePeerRecovery(targetPeerID, `ICE ${state}`);
+      } else if (state === 'checking') {
+        scheduleConnectionWatchdog(targetPeerID);
       }
     });
 
     peer.on('onDataChannelOpen', ({ label, channel }) => {
+      clearPeerTimers(targetPeerID);
+      recoveryAttemptsRef.current.delete(targetPeerID);
       addLog(`Data Channel Open with ${targetPeerID}`);
       channel.binaryType = 'arraybuffer';
 
@@ -493,10 +666,16 @@ const Room = ({ roomId, onLeave }) => {
     });
 
     peer.on('onDataChannelClose', () => {
+      if (intentionalPeerCloseRef.current.has(targetPeerID)) {
+        intentionalPeerCloseRef.current.delete(targetPeerID);
+        return;
+      }
+
       const tc = transfersRef.current.get(targetPeerID);
       if (tc) tc.detachChannel();
       transfersRef.current.delete(targetPeerID);
       setActivePeers(prev => prev.map(p => p.id === targetPeerID ? { ...p, status: 'disconnected' } : p));
+      schedulePeerRecovery(targetPeerID, 'data channel closed');
     });
 
     peer.on('onRemoteDataChannel', (channel) => {

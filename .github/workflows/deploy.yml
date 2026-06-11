@@ -43,6 +43,7 @@ jobs:
           VITE_TURN_URL: ${{ secrets.VITE_TURN_URL }}
           VITE_TURN_USERNAME: ${{ secrets.VITE_TURN_USERNAME }}
           VITE_TURN_CREDENTIAL: ${{ secrets.VITE_TURN_CREDENTIAL }}
+          VITE_ICE_TRANSPORT_POLICY: ${{ secrets.VITE_ICE_TRANSPORT_POLICY }}
         run: npm run build
       - name: Setup Pages
         uses: actions/configure-pages@v4

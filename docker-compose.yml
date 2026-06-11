@@ -42,6 +42,7 @@ services:
         - VITE_TURN_URL=${VITE_TURN_URL:-}
         - VITE_TURN_USERNAME=${VITE_TURN_USERNAME:-}
         - VITE_TURN_CREDENTIAL=${VITE_TURN_CREDENTIAL:-}
+        - VITE_ICE_TRANSPORT_POLICY=${VITE_ICE_TRANSPORT_POLICY:-all}
     ports:
       - "80:80"
     depends_on:

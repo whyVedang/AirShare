@@ -132,19 +132,60 @@ export class SFUPeerEngine extends SimpleEmitter {
     }
 }
 
+const splitIceUrls = (value) => (
+  typeof value === 'string'
+    ? value.split(/[,\s]+/).map(url => url.trim()).filter(Boolean)
+    : []
+);
+
+const unique = (values) => Array.from(new Set(values.filter(Boolean)));
+
+const toUrlsValue = (urls) => (urls.length === 1 ? urls[0] : urls);
+
+const buildIceServers = (overrideIceServers) => {
+  if (Array.isArray(overrideIceServers) && overrideIceServers.length > 0) {
+    return overrideIceServers;
+  }
+
+  const stunUrls = unique([
+    ...splitIceUrls(import.meta.env.VITE_STUN_URL),
+    'stun:stun.l.google.com:19302'
+  ]);
+  const turnUrls = unique(splitIceUrls(import.meta.env.VITE_TURN_URL));
+  const servers = [];
+
+  if (stunUrls.length > 0) {
+    servers.push({ urls: toUrlsValue(stunUrls) });
+  }
+
+  if (turnUrls.length > 0) {
+    const turnServer = { urls: toUrlsValue(turnUrls) };
+    const username = import.meta.env.VITE_TURN_USERNAME || '';
+    const credential = import.meta.env.VITE_TURN_CREDENTIAL || '';
+
+    if (username || credential) {
+      turnServer.username = username;
+      turnServer.credential = credential;
+    }
+
+    servers.push(turnServer);
+  }
+
+  return servers;
+};
+
+const getIceTransportPolicy = (overridePolicy) => {
+  const policy = overridePolicy || import.meta.env.VITE_ICE_TRANSPORT_POLICY || 'all';
+  return ['all', 'relay'].includes(policy) ? policy : 'all';
+};
+
 class PeerEngine {
   constructor(config = {}) {
     this.config = {
       // ICE servers for NAT traversal (STUN) and relay fallback (TURN)
-      // Configured via environment variables; falls back to Google STUN for local dev
-      iceServers: config.iceServers || [
-        { urls: import.meta.env.VITE_STUN_URL || 'stun:stun.l.google.com:19302' },
-        ...(import.meta.env.VITE_TURN_URL ? [{
-          urls: import.meta.env.VITE_TURN_URL,
-          username: import.meta.env.VITE_TURN_USERNAME || '',
-          credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
-        }] : [])
-      ],
+      // Configured via environment variables; falls back to Google STUN for local dev.
+      iceServers: buildIceServers(config.iceServers),
+      iceTransportPolicy: getIceTransportPolicy(config.iceTransportPolicy),
       // SCTP settings for data channel
       dataChannelOptions: {
         ordered: true,
@@ -168,7 +209,8 @@ class PeerEngine {
       onDataChannelMessage: null,
       onDataChannelError: null,
       onRemoteDataChannel: null,
-      onIceGatheringComplete: null
+      onIceGatheringComplete: null,
+      onIceConnectionStateChange: null
     };
   }
 
@@ -183,6 +225,7 @@ class PeerEngine {
 
     const rtcConfig = {
       iceServers: this.config.iceServers,
+      iceTransportPolicy: this.config.iceTransportPolicy,
       iceCandidatePoolSize: 10, // Pre-gather ICE candidates
       bundlePolicy: 'max-bundle', // Use single transport for all media
       rtcpMuxPolicy: 'require' // Multiplex RTP and RTCP
@@ -214,6 +257,9 @@ class PeerEngine {
     // ICE connection state
     this.peerConnection.oniceconnectionstatechange = () => {
       this.iceConnectionState = this.peerConnection.iceConnectionState;
+      this._triggerCallback('onIceConnectionStateChange', {
+        state: this.iceConnectionState
+      });
     };
 
     // ICE candidate gathering
@@ -248,7 +294,7 @@ class PeerEngine {
       throw new Error('PeerConnection not initialized');
     }
 
-    if (this.dataChannel) {
+    if (this.dataChannel && this.dataChannel.readyState !== 'closed') {
       console.warn('[PeerEngine] Data channel already exists');
       return this.dataChannel;
     }
@@ -305,7 +351,7 @@ class PeerEngine {
    * Creates an SDP offer
    * @returns {Promise<RTCSessionDescriptionInit>}
    */
-  async createOffer() {
+  async createOffer(options = {}) {
     if (!this.peerConnection) {
       throw new Error('PeerConnection not initialized');
     }
@@ -313,7 +359,8 @@ class PeerEngine {
     try {
       const offer = await this.peerConnection.createOffer({
         offerToReceiveAudio: false,
-        offerToReceiveVideo: false
+        offerToReceiveVideo: false,
+        iceRestart: Boolean(options.iceRestart)
       });
 
       await this.peerConnection.setLocalDescription(offer);
@@ -401,6 +448,16 @@ class PeerEngine {
     }
   }
 
+  restartIce() {
+    if (!this.peerConnection) {
+      return;
+    }
+
+    if (typeof this.peerConnection.restartIce === 'function') {
+      this.peerConnection.restartIce();
+    }
+  }
+
   getSignalingState() {
     return this.peerConnection?.signalingState || 'closed';
   }
@@ -410,7 +467,9 @@ class PeerEngine {
   }
 
   hasDataChannel() {
-    return Boolean(this.dataChannel || this.remoteDataChannel);
+    return [this.dataChannel, this.remoteDataChannel].some(channel => (
+      channel && channel.readyState !== 'closed'
+    ));
   }
 
   /**
@@ -418,7 +477,9 @@ class PeerEngine {
    * @param {ArrayBuffer|string} data
    */
   send(data) {
-    const channel = this.dataChannel || this.remoteDataChannel;
+    const channel = [this.dataChannel, this.remoteDataChannel].find(item => (
+      item && item.readyState === 'open'
+    ));
     
     if (!channel) {
       throw new Error('No data channel available');
@@ -503,8 +564,10 @@ class PeerEngine {
     return {
       connectionState: this.connectionState,
       iceConnectionState: this.iceConnectionState,
-      hasDataChannel: !!(this.dataChannel || this.remoteDataChannel),
-      dataChannelState: (this.dataChannel || this.remoteDataChannel)?.readyState || 'none'
+      hasDataChannel: this.hasDataChannel(),
+      dataChannelState: (
+        [this.dataChannel, this.remoteDataChannel].find(channel => channel)?.readyState || 'none'
+      )
     };
   }
 
@@ -513,7 +576,9 @@ class PeerEngine {
    * @returns {boolean}
    */
   isReady() {
-    const channel = this.dataChannel || this.remoteDataChannel;
+    const channel = [this.dataChannel, this.remoteDataChannel].find(item => (
+      item && item.readyState === 'open'
+    ));
     return (
       this.connectionState === 'connected' &&
       channel &&
